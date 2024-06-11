@@ -3,7 +3,7 @@
 // license that can be found in the LICENSE file.
 
 // Package internal contains definitions used by both log and log/slog.
-package internal
+package oldinternal
 
 // DefaultOutput holds a function which calls the default log.Logger's
 // output function.

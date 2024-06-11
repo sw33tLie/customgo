@@ -39,7 +39,7 @@
 // Note especially that this package does not itself change behavior
 // at run time based on the GOEXPERIMENT variable.
 // The code used in builds to interpret the GOEXPERIMENT variable
-// is in the separate package internal/buildcfg.
+// is in the separate package oldinternal/buildcfg.
 package goexperiment
 
 //go:generate go run mkconsts.go
