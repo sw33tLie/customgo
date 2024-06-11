@@ -113,7 +113,7 @@ func compatibleValueTypes(v1, v2 *profile.ValueType) bool {
 	if v1.Unit == v2.Unit {
 		return true
 	}
-	for _, ut := range UnitTypes {
+	for _, ut := range unitTypes {
 		if ut.sniffUnit(v1.Unit) != nil && ut.sniffUnit(v2.Unit) != nil {
 			return true
 		}
@@ -121,7 +121,7 @@ func compatibleValueTypes(v1, v2 *profile.ValueType) bool {
 	return false
 }
 
-// Scale a measurement from a unit to a different unit and returns
+// Scale a measurement from an unit to a different unit and returns
 // the scaled value and the target unit. The returned target unit
 // will be empty if uninteresting (could be skipped).
 func Scale(value int64, fromUnit, toUnit string) (float64, string) {
@@ -130,7 +130,7 @@ func Scale(value int64, fromUnit, toUnit string) (float64, string) {
 		v, u := Scale(-value, fromUnit, toUnit)
 		return -v, u
 	}
-	for _, ut := range UnitTypes {
+	for _, ut := range unitTypes {
 		if v, u, ok := ut.convertUnit(value, fromUnit, toUnit); ok {
 			return v, u
 		}
@@ -177,26 +177,26 @@ func Percentage(value, total int64) string {
 	}
 }
 
-// Unit includes a list of aliases representing a specific unit and a factor
+// unit includes a list of aliases representing a specific unit and a factor
 // which one can multiple a value in the specified unit by to get the value
 // in terms of the base unit.
-type Unit struct {
-	CanonicalName string
+type unit struct {
+	canonicalName string
 	aliases       []string
-	Factor        float64
+	factor        float64
 }
 
-// UnitType includes a list of units that are within the same category (i.e.
+// unitType includes a list of units that are within the same category (i.e.
 // memory or time units) and a default unit to use for this type of unit.
-type UnitType struct {
-	DefaultUnit Unit
-	Units       []Unit
+type unitType struct {
+	defaultUnit unit
+	units       []unit
 }
 
 // findByAlias returns the unit associated with the specified alias. It returns
 // nil if the unit with such alias is not found.
-func (ut UnitType) findByAlias(alias string) *Unit {
-	for _, u := range ut.Units {
+func (ut unitType) findByAlias(alias string) *unit {
+	for _, u := range ut.units {
 		for _, a := range u.aliases {
 			if alias == a {
 				return &u
@@ -208,7 +208,7 @@ func (ut UnitType) findByAlias(alias string) *Unit {
 
 // sniffUnit simpifies the input alias and returns the unit associated with the
 // specified alias. It returns nil if the unit with such alias is not found.
-func (ut UnitType) sniffUnit(unit string) *Unit {
+func (ut unitType) sniffUnit(unit string) *unit {
 	unit = strings.ToLower(unit)
 	if len(unit) > 2 {
 		unit = strings.TrimSuffix(unit, "s")
@@ -219,13 +219,13 @@ func (ut UnitType) sniffUnit(unit string) *Unit {
 // autoScale takes in the value with units of the base unit and returns
 // that value scaled to a reasonable unit if a reasonable unit is
 // found.
-func (ut UnitType) autoScale(value float64) (float64, string, bool) {
+func (ut unitType) autoScale(value float64) (float64, string, bool) {
 	var f float64
 	var unit string
-	for _, u := range ut.Units {
-		if u.Factor >= f && (value/u.Factor) >= 1.0 {
-			f = u.Factor
-			unit = u.CanonicalName
+	for _, u := range ut.units {
+		if u.factor >= f && (value/u.factor) >= 1.0 {
+			f = u.factor
+			unit = u.canonicalName
 		}
 	}
 	if f == 0 {
@@ -239,28 +239,27 @@ func (ut UnitType) autoScale(value float64) (float64, string, bool) {
 // included in the unitType, then a false boolean will be returned. If the
 // toUnit is not in the unitType, the value will be returned in terms of the
 // default unitType.
-func (ut UnitType) convertUnit(value int64, fromUnitStr, toUnitStr string) (float64, string, bool) {
+func (ut unitType) convertUnit(value int64, fromUnitStr, toUnitStr string) (float64, string, bool) {
 	fromUnit := ut.sniffUnit(fromUnitStr)
 	if fromUnit == nil {
 		return 0, "", false
 	}
-	v := float64(value) * fromUnit.Factor
+	v := float64(value) * fromUnit.factor
 	if toUnitStr == "minimum" || toUnitStr == "auto" {
 		if v, u, ok := ut.autoScale(v); ok {
 			return v, u, true
 		}
-		return v / ut.DefaultUnit.Factor, ut.DefaultUnit.CanonicalName, true
+		return v / ut.defaultUnit.factor, ut.defaultUnit.canonicalName, true
 	}
 	toUnit := ut.sniffUnit(toUnitStr)
 	if toUnit == nil {
-		return v / ut.DefaultUnit.Factor, ut.DefaultUnit.CanonicalName, true
+		return v / ut.defaultUnit.factor, ut.defaultUnit.canonicalName, true
 	}
-	return v / toUnit.Factor, toUnit.CanonicalName, true
+	return v / toUnit.factor, toUnit.canonicalName, true
 }
 
-// UnitTypes holds the definition of units known to pprof.
-var UnitTypes = []UnitType{{
-	Units: []Unit{
+var unitTypes = []unitType{{
+	units: []unit{
 		{"B", []string{"b", "byte"}, 1},
 		{"kB", []string{"kb", "kbyte", "kilobyte"}, float64(1 << 10)},
 		{"MB", []string{"mb", "mbyte", "megabyte"}, float64(1 << 20)},
@@ -268,18 +267,18 @@ var UnitTypes = []UnitType{{
 		{"TB", []string{"tb", "tbyte", "terabyte"}, float64(1 << 40)},
 		{"PB", []string{"pb", "pbyte", "petabyte"}, float64(1 << 50)},
 	},
-	DefaultUnit: Unit{"B", []string{"b", "byte"}, 1},
+	defaultUnit: unit{"B", []string{"b", "byte"}, 1},
 }, {
-	Units: []Unit{
+	units: []unit{
 		{"ns", []string{"ns", "nanosecond"}, float64(time.Nanosecond)},
 		{"us", []string{"μs", "us", "microsecond"}, float64(time.Microsecond)},
 		{"ms", []string{"ms", "millisecond"}, float64(time.Millisecond)},
 		{"s", []string{"s", "sec", "second"}, float64(time.Second)},
 		{"hrs", []string{"hour", "hr"}, float64(time.Hour)},
 	},
-	DefaultUnit: Unit{"s", []string{}, float64(time.Second)},
+	defaultUnit: unit{"s", []string{}, float64(time.Second)},
 }, {
-	Units: []Unit{
+	units: []unit{
 		{"n*GCU", []string{"nanogcu"}, 1e-9},
 		{"u*GCU", []string{"microgcu"}, 1e-6},
 		{"m*GCU", []string{"milligcu"}, 1e-3},
@@ -290,5 +289,5 @@ var UnitTypes = []UnitType{{
 		{"T*GCU", []string{"teragcu"}, 1e12},
 		{"P*GCU", []string{"petagcu"}, 1e15},
 	},
-	DefaultUnit: Unit{"GCU", []string{}, 1.0},
+	defaultUnit: unit{"GCU", []string{}, 1.0},
 }}

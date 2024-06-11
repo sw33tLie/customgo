@@ -43,7 +43,7 @@ func TestReadFile(t *testing.T) {
 func TestWriteFile(t *testing.T) {
 	t.Parallel()
 
-	f, err := CreateTemp("", "os-test")
+	f, err := CreateTemp("", "ioutil-test")
 	if err != nil {
 		t.Fatal(err)
 	}

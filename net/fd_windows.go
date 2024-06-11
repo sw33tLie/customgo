@@ -23,10 +23,6 @@ const (
 	writeMsgSyscallName = "wsasendmsg"
 )
 
-func init() {
-	poll.InitWSA()
-}
-
 // canUseConnectEx reports whether we can use the ConnectEx Windows API call
 // for the given network type.
 func canUseConnectEx(net string) bool {
@@ -68,38 +64,10 @@ func (fd *netFD) connect(ctx context.Context, la, ra syscall.Sockaddr) (syscall.
 	if err := fd.init(); err != nil {
 		return nil, err
 	}
-
-	if ctx.Done() != nil {
-		// Propagate the Context's deadline and cancellation.
-		// If the context is already done, or if it has a nonzero deadline,
-		// ensure that that is applied before the call to ConnectEx begins
-		// so that we don't return spurious connections.
+	if deadline, ok := ctx.Deadline(); ok && !deadline.IsZero() {
+		fd.pfd.SetWriteDeadline(deadline)
 		defer fd.pfd.SetWriteDeadline(noDeadline)
-
-		if ctx.Err() != nil {
-			fd.pfd.SetWriteDeadline(aLongTimeAgo)
-		} else {
-			if deadline, ok := ctx.Deadline(); ok && !deadline.IsZero() {
-				fd.pfd.SetWriteDeadline(deadline)
-			}
-
-			done := make(chan struct{})
-			stop := context.AfterFunc(ctx, func() {
-				// Force the runtime's poller to immediately give
-				// up waiting for writability.
-				fd.pfd.SetWriteDeadline(aLongTimeAgo)
-				close(done)
-			})
-			defer func() {
-				if !stop() {
-					// Wait for the call to SetWriteDeadline to complete so that we can
-					// reset the deadline if everything else succeeded.
-					<-done
-				}
-			}()
-		}
 	}
-
 	if !canUseConnectEx(fd.net) {
 		err := connectFunc(fd.pfd.Sysfd, ra)
 		return nil, os.NewSyscallError("connect", err)
@@ -135,7 +103,7 @@ func (fd *netFD) connect(ctx context.Context, la, ra syscall.Sockaddr) (syscall.
 			Rtt:                   windows.TCP_INITIAL_RTO_UNSPECIFIED_RTT, // use the default or overridden by the Administrator
 			MaxSynRetransmissions: 1,                                       // minimum possible value before Windows 10.0.16299
 		}
-		if windows.SupportTCPInitialRTONoSYNRetransmissions() {
+		if windows.Support_TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS() {
 			// In Windows 10.0.16299 TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS makes ConnectEx() fails instantly.
 			params.MaxSynRetransmissions = windows.TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS
 		}
@@ -144,6 +112,22 @@ func (fd *netFD) connect(ctx context.Context, la, ra syscall.Sockaddr) (syscall.
 		// If it fails reliably, we expect TestDialClosedPortFailFast to detect it.
 		_ = fd.pfd.WSAIoctl(windows.SIO_TCP_INITIAL_RTO, (*byte)(unsafe.Pointer(&params)), uint32(unsafe.Sizeof(params)), nil, 0, &out, nil, 0)
 	}
+
+	// Wait for the goroutine converting context.Done into a write timeout
+	// to exist, otherwise our caller might cancel the context and
+	// cause fd.setWriteDeadline(aLongTimeAgo) to cancel a successful dial.
+	done := make(chan bool) // must be unbuffered
+	defer func() { done <- true }()
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Force the runtime's poller to immediately give
+			// up waiting for writability.
+			fd.pfd.SetWriteDeadline(aLongTimeAgo)
+			<-done
+		case <-done:
+		}
+	}()
 
 	// Call ConnectEx API.
 	if err := fd.pfd.ConnectEx(ra); err != nil {
@@ -216,6 +200,6 @@ func (fd *netFD) accept() (*netFD, error) {
 // Unimplemented functions.
 
 func (fd *netFD) dup() (*os.File, error) {
-	// TODO: Implement this, perhaps using internal/poll.DupCloseOnExec.
+	// TODO: Implement this
 	return nil, syscall.EWINDOWS
 }

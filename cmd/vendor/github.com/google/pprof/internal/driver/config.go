@@ -51,7 +51,6 @@ type config struct {
 	TagShow      string  `json:"tagshow,omitempty"`
 	TagHide      string  `json:"taghide,omitempty"`
 	NoInlines    bool    `json:"noinlines,omitempty"`
-	ShowColumns  bool    `json:"showcolumns,omitempty"`
 
 	// Output granularity
 	Granularity string `json:"granularity,omitempty"`
@@ -158,7 +157,6 @@ func init() {
 		"sort":                 "sort",
 		"granularity":          "g",
 		"noinlines":            "noinlines",
-		"showcolumns":          "showcolumns",
 	}
 
 	def := defaultConfig()

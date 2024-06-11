@@ -5,8 +5,8 @@
 package bigmod
 
 import (
+	"encoding/binary"
 	"errors"
-	"internal/byteorder"
 	"math/big"
 	"math/bits"
 )
@@ -38,6 +38,14 @@ func ctEq(x, y uint) choice {
 	_, c1 := bits.Sub(x, y, 0)
 	_, c2 := bits.Sub(y, x, 0)
 	return not(choice(c1 | c2))
+}
+
+// ctGeq returns 1 if x >= y, and 0 otherwise. The execution time of this
+// function does not depend on its inputs.
+func ctGeq(x, y uint) choice {
+	// If x < y, then x - y generates a carry.
+	_, carry := bits.Sub(x, y, 0)
+	return not(choice(carry))
 }
 
 // Nat represents an arbitrary natural number
@@ -76,7 +84,9 @@ func (x *Nat) expand(n int) *Nat {
 		return x
 	}
 	extraLimbs := x.limbs[len(x.limbs):n]
-	clear(extraLimbs)
+	for i := range extraLimbs {
+		extraLimbs[i] = 0
+	}
 	x.limbs = x.limbs[:n]
 	return x
 }
@@ -87,7 +97,9 @@ func (x *Nat) reset(n int) *Nat {
 		x.limbs = make([]uint, n)
 		return x
 	}
-	clear(x.limbs)
+	for i := range x.limbs {
+		x.limbs[i] = 0
+	}
 	x.limbs = x.limbs[:n]
 	return x
 }
@@ -170,9 +182,9 @@ func (x *Nat) SetOverflowingBytes(b []byte, m *Modulus) (*Nat, error) {
 // big-endian encoded uint value.
 func bigEndianUint(buf []byte) uint {
 	if _W == 64 {
-		return uint(byteorder.BeUint64(buf))
+		return uint(binary.BigEndian.Uint64(buf))
 	}
-	return uint(byteorder.BeUint32(buf))
+	return uint(binary.BigEndian.Uint32(buf))
 }
 
 func (x *Nat) setBytes(b []byte, m *Modulus) error {
@@ -306,48 +318,14 @@ type Modulus struct {
 // rr returns R*R with R = 2^(_W * n) and n = len(m.nat.limbs).
 func rr(m *Modulus) *Nat {
 	rr := NewNat().ExpandFor(m)
-	n := uint(len(rr.limbs))
-	mLen := uint(m.BitLen())
-	logR := _W * n
-
-	// We start by computing R = 2^(_W * n) mod m. We can get pretty close, to
-	// 2^⌊log₂m⌋, by setting the highest bit we can without having to reduce.
-	rr.limbs[n-1] = 1 << ((mLen - 1) % _W)
-	// Then we double until we reach 2^(_W * n).
-	for i := mLen - 1; i < logR; i++ {
-		rr.Add(rr, m)
+	// R*R is 2^(2 * _W * n). We can safely get 2^(_W * (n - 1)) by setting the
+	// most significant limb to 1. We then get to R*R by shifting left by _W
+	// n + 1 times.
+	n := len(rr.limbs)
+	rr.limbs[n-1] = 1
+	for i := n - 1; i < 2*n; i++ {
+		rr.shiftIn(0, m) // x = x * 2^_W mod m
 	}
-
-	// Next we need to get from R to 2^(_W * n) R mod m (aka from one to R in
-	// the Montgomery domain, meaning we can use Montgomery multiplication now).
-	// We could do that by doubling _W * n times, or with a square-and-double
-	// chain log2(_W * n) long. Turns out the fastest thing is to start out with
-	// doublings, and switch to square-and-double once the exponent is large
-	// enough to justify the cost of the multiplications.
-
-	// The threshold is selected experimentally as a linear function of n.
-	threshold := n / 4
-
-	// We calculate how many of the most-significant bits of the exponent we can
-	// compute before crossing the threshold, and we do it with doublings.
-	i := bits.UintSize
-	for logR>>i <= threshold {
-		i--
-	}
-	for k := uint(0); k < logR>>i; k++ {
-		rr.Add(rr, m)
-	}
-
-	// Then we process the remaining bits of the exponent with a
-	// square-and-double chain.
-	for i > 0 {
-		rr.montgomeryMul(rr, rr, m)
-		i--
-		if logR>>i&1 != 0 {
-			rr.Add(rr, m)
-		}
-	}
-
 	return rr
 }
 
@@ -767,21 +745,26 @@ func (out *Nat) Exp(x *Nat, e []byte, m *Modulus) *Nat {
 	return out.montgomeryReduction(m)
 }
 
-// ExpShortVarTime calculates out = x^e mod m.
+// ExpShort calculates out = x^e mod m.
 //
 // The output will be resized to the size of m and overwritten. x must already
-// be reduced modulo m. This leaks the exponent through timing side-channels.
-func (out *Nat) ExpShortVarTime(x *Nat, e uint, m *Modulus) *Nat {
-	// For short exponents, precomputing a table and using a window like in Exp
-	// doesn't pay off. Instead, we do a simple conditional square-and-multiply
-	// chain, skipping the initial run of zeroes.
+// be reduced modulo m. This leaks the exact bit size of the exponent.
+func (out *Nat) ExpShort(x *Nat, e uint, m *Modulus) *Nat {
 	xR := NewNat().set(x).montgomeryRepresentation(m)
-	out.set(xR)
-	for i := bits.UintSize - bitLen(e) + 1; i < bits.UintSize; i++ {
+
+	out.resetFor(m)
+	out.limbs[0] = 1
+	out.montgomeryRepresentation(m)
+
+	// For short exponents, precomputing a table and using a window like in Exp
+	// doesn't pay off. Instead, we do a simple constant-time conditional
+	// square-and-multiply chain, skipping the initial run of zeroes.
+	tmp := NewNat().ExpandFor(m)
+	for i := bits.UintSize - bitLen(e); i < bits.UintSize; i++ {
 		out.montgomeryMul(out, out, m)
-		if k := (e >> (bits.UintSize - i - 1)) & 1; k != 0 {
-			out.montgomeryMul(out, xR, m)
-		}
+		k := (e >> (bits.UintSize - i - 1)) & 1
+		tmp.montgomeryMul(out, xR, m)
+		out.assign(ctEq(k, 1), tmp)
 	}
 	return out.montgomeryReduction(m)
 }

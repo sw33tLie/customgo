@@ -66,7 +66,7 @@
 //
 //	func ShouldEnable(file string, line int) bool {
 //		if m == nil {
-//			return true
+//			return false
 //		}
 //		h := bisect.Hash(file, line)
 //		if m.ShouldPrint(h) {
@@ -83,12 +83,12 @@
 //
 //	func ShouldEnable(file string, line int) bool {
 //		if m == nil {
-//			return true
+//			return false
 //		}
 //		h := bisect.Hash(file, line)
 //		if m.ShouldPrint(h) {
 //			if m.MarkerOnly() {
-//				bisect.PrintMarker(os.Stderr, h)
+//				bisect.PrintMarker(os.Stderr)
 //			} else {
 //				fmt.Fprintf(os.Stderr, "%v %s:%d\n", bisect.Marker(h), file, line)
 //			}
@@ -180,6 +180,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 // New creates and returns a new Matcher implementing the given pattern.
@@ -310,7 +311,22 @@ type Matcher struct {
 	quiet   bool   // disables all reporting.  reset if verbose is true. use case is -d=fmahash=qn
 	enable  bool   // when true, list is for “enable and report” (when false, “disable and report”)
 	list    []cond // conditions; later ones win over earlier ones
-	dedup   atomic.Pointer[dedup]
+	dedup   atomicPointerDedup
+}
+
+// atomicPointerDedup is an atomic.Pointer[dedup],
+// but we are avoiding using Go 1.19's atomic.Pointer
+// until the bootstrap toolchain can be relied upon to have it.
+type atomicPointerDedup struct {
+	p unsafe.Pointer
+}
+
+func (p *atomicPointerDedup) Load() *dedup {
+	return (*dedup)(atomic.LoadPointer(&p.p))
+}
+
+func (p *atomicPointerDedup) CompareAndSwap(old, new *dedup) bool {
+	return atomic.CompareAndSwapPointer(&p.p, unsafe.Pointer(old), unsafe.Pointer(new))
 }
 
 // A cond is a single condition in the matcher.
@@ -466,6 +482,7 @@ func (m *Matcher) stack(w Writer) bool {
 		}
 	}
 	return m.ShouldEnable(h)
+
 }
 
 // Writer is the same interface as io.Writer.
@@ -478,7 +495,7 @@ type Writer interface {
 // It is appropriate to use when [Matcher.ShouldPrint] and [Matcher.MarkerOnly] both return true.
 func PrintMarker(w Writer, h uint64) error {
 	var buf [50]byte
-	b := AppendMarker(buf[:0], h)
+	b := AppendMarker(buf[:], h)
 	b = append(b, '\n')
 	_, err := w.Write(b)
 	return err
@@ -496,7 +513,7 @@ func printStack(w Writer, h uint64, stk []uintptr) error {
 	for {
 		f, more := frames.Next()
 		buf = append(buf, prefix...)
-		buf = append(buf, f.Function...)
+		buf = append(buf, f.Func.Name()...)
 		buf = append(buf, "()\n"...)
 		buf = append(buf, prefix...)
 		buf = append(buf, '\t')
@@ -711,7 +728,7 @@ func fnvString(h uint64, x string) uint64 {
 
 func fnvUint64(h uint64, x uint64) uint64 {
 	for i := 0; i < 8; i++ {
-		h ^= x & 0xFF
+		h ^= uint64(x & 0xFF)
 		x >>= 8
 		h *= prime64
 	}

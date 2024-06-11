@@ -7,7 +7,7 @@ package mime
 
 import (
 	"fmt"
-	"slices"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -22,11 +22,18 @@ var (
 	extensions   sync.Map   // map[string][]string; slice values are append-only.
 )
 
+func clearSyncMap(m *sync.Map) {
+	m.Range(func(k, _ any) bool {
+		m.Delete(k)
+		return true
+	})
+}
+
 // setMimeTypes is used by initMime's non-test path, and by tests.
 func setMimeTypes(lowerExt, mixExt map[string]string) {
-	mimeTypes.Clear()
-	mimeTypesLower.Clear()
-	extensions.Clear()
+	clearSyncMap(&mimeTypes)
+	clearSyncMap(&mimeTypesLower)
+	clearSyncMap(&extensions)
 
 	for k, v := range lowerExt {
 		mimeTypesLower.Store(k, v)
@@ -150,7 +157,7 @@ func ExtensionsByType(typ string) ([]string, error) {
 		return nil, nil
 	}
 	ret := append([]string(nil), s.([]string)...)
-	slices.Sort(ret)
+	sort.Strings(ret)
 	return ret, nil
 }
 

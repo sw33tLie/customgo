@@ -5,6 +5,7 @@
 package load
 
 import (
+	"cmd/go/internal/modload"
 	"errors"
 	"fmt"
 	"go/build"
@@ -12,9 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
-	"cmd/go/internal/gover"
-	"cmd/go/internal/modload"
 )
 
 var ErrNotGoDebug = errors.New("not //go:debug line")
@@ -34,10 +32,25 @@ func ParseGoDebug(text string) (key, value string, err error) {
 	if !ok {
 		return "", "", fmt.Errorf("missing key=value")
 	}
-	if err := modload.CheckGodebug("//go:debug setting", k, v); err != nil {
-		return "", "", err
+	if strings.ContainsAny(k, " \t") {
+		return "", "", fmt.Errorf("key contains space")
 	}
-	return k, v, nil
+	if strings.ContainsAny(v, " \t") {
+		return "", "", fmt.Errorf("value contains space")
+	}
+	if strings.ContainsAny(k, ",") {
+		return "", "", fmt.Errorf("key contains comma")
+	}
+	if strings.ContainsAny(v, ",") {
+		return "", "", fmt.Errorf("value contains comma")
+	}
+
+	for _, info := range godebugs.All {
+		if k == info.Name {
+			return k, v, nil
+		}
+	}
+	return "", "", fmt.Errorf("unknown //go:debug setting %q", k)
 }
 
 // defaultGODEBUG returns the default GODEBUG setting for the main package p.
@@ -51,21 +64,14 @@ func defaultGODEBUG(p *Package, directives, testDirectives, xtestDirectives []bu
 	if modload.RootMode == modload.NoRoot && p.Module != nil {
 		// This is go install pkg@version or go run pkg@version.
 		// Use the Go version from the package.
-		// If there isn't one, then assume Go 1.20,
-		// the last version before GODEBUGs were introduced.
+		// If there isn't one, then
 		goVersion = p.Module.GoVersion
 		if goVersion == "" {
 			goVersion = "1.20"
 		}
 	}
 
-	var m map[string]string
-	for _, g := range modload.MainModules.Godebugs() {
-		if m == nil {
-			m = make(map[string]string)
-		}
-		m[g.Key] = g.Value
-	}
+	m := godebugForGoVersion(goVersion)
 	for _, list := range [][]build.Directive{p.Internal.Build.Directives, directives, testDirectives, xtestDirectives} {
 		for _, d := range list {
 			k, v, err := ParseGoDebug(d.Text)
@@ -78,23 +84,6 @@ func defaultGODEBUG(p *Package, directives, testDirectives, xtestDirectives []bu
 			m[k] = v
 		}
 	}
-	if v, ok := m["default"]; ok {
-		delete(m, "default")
-		v = strings.TrimPrefix(v, "go")
-		if gover.IsValid(v) {
-			goVersion = v
-		}
-	}
-
-	defaults := godebugForGoVersion(goVersion)
-	if defaults != nil {
-		// Apply m on top of defaults.
-		for k, v := range m {
-			defaults[k] = v
-		}
-		m = defaults
-	}
-
 	var keys []string
 	for k := range m {
 		keys = append(keys, k)

@@ -41,20 +41,19 @@ var services = map[string]map[string]int{
 		"domain": 53,
 	},
 	"tcp": {
-		"ftp":         21,
-		"ftps":        990,
-		"gopher":      70, // ʕ◔ϖ◔ʔ
-		"http":        80,
-		"https":       443,
-		"imap2":       143,
-		"imap3":       220,
-		"imaps":       993,
-		"pop3":        110,
-		"pop3s":       995,
-		"smtp":        25,
-		"submissions": 465,
-		"ssh":         22,
-		"telnet":      23,
+		"ftp":    21,
+		"ftps":   990,
+		"gopher": 70, // ʕ◔ϖ◔ʔ
+		"http":   80,
+		"https":  443,
+		"imap2":  143,
+		"imap3":  220,
+		"imaps":  993,
+		"pop3":   110,
+		"pop3s":  995,
+		"smtp":   25,
+		"ssh":    22,
+		"telnet": 23,
 	},
 }
 
@@ -84,20 +83,12 @@ const maxPortBufSize = len("mobility-header") + 10
 
 func lookupPortMap(network, service string) (port int, error error) {
 	switch network {
-	case "ip": // no hints
-		if p, err := lookupPortMapWithNetwork("tcp", "ip", service); err == nil {
-			return p, nil
-		}
-		return lookupPortMapWithNetwork("udp", "ip", service)
-	case "tcp", "tcp4", "tcp6":
-		return lookupPortMapWithNetwork("tcp", "tcp", service)
-	case "udp", "udp4", "udp6":
-		return lookupPortMapWithNetwork("udp", "udp", service)
+	case "tcp4", "tcp6":
+		network = "tcp"
+	case "udp4", "udp6":
+		network = "udp"
 	}
-	return 0, &DNSError{Err: "unknown network", Name: network + "/" + service}
-}
 
-func lookupPortMapWithNetwork(network, errNetwork, service string) (port int, error error) {
 	if m, ok := services[network]; ok {
 		var lowerService [maxPortBufSize]byte
 		n := copy(lowerService[:], service)
@@ -105,9 +96,8 @@ func lookupPortMapWithNetwork(network, errNetwork, service string) (port int, er
 		if port, ok := m[string(lowerService[:n])]; ok && n == len(service) {
 			return port, nil
 		}
-		return 0, newDNSError(errUnknownPort, errNetwork+"/"+service, "")
 	}
-	return 0, &DNSError{Err: "unknown network", Name: errNetwork + "/" + service}
+	return 0, &AddrError{Err: "unknown port", Addr: network + "/" + service}
 }
 
 // ipVersion returns the provided network's IP version: '4', '6' or 0
@@ -181,8 +171,8 @@ func (r *Resolver) getLookupGroup() *singleflight.Group {
 // LookupHost looks up the given host using the local resolver.
 // It returns a slice of that host's addresses.
 //
-// LookupHost uses [context.Background] internally; to specify the context, use
-// [Resolver.LookupHost].
+// LookupHost uses context.Background internally; to specify the context, use
+// Resolver.LookupHost.
 func LookupHost(host string) (addrs []string, err error) {
 	return DefaultResolver.LookupHost(context.Background(), host)
 }
@@ -192,7 +182,7 @@ func LookupHost(host string) (addrs []string, err error) {
 func (r *Resolver) LookupHost(ctx context.Context, host string) (addrs []string, err error) {
 	// Make sure that no matter what we do later, host=="" is rejected.
 	if host == "" {
-		return nil, newDNSError(errNoSuchHost, host, "")
+		return nil, &DNSError{Err: errNoSuchHost.Error(), Name: host, IsNotFound: true}
 	}
 	if _, err := netip.ParseAddr(host); err == nil {
 		return []string{host}, nil
@@ -236,7 +226,7 @@ func (r *Resolver) LookupIP(ctx context.Context, network, host string) ([]IP, er
 	}
 
 	if host == "" {
-		return nil, newDNSError(errNoSuchHost, host, "")
+		return nil, &DNSError{Err: errNoSuchHost.Error(), Name: host, IsNotFound: true}
 	}
 	addrs, err := r.internetAddrList(ctx, afnet, host)
 	if err != nil {
@@ -304,7 +294,7 @@ func withUnexpiredValuesPreserved(lookupCtx context.Context) context.Context {
 func (r *Resolver) lookupIPAddr(ctx context.Context, network, host string) ([]IPAddr, error) {
 	// Make sure that no matter what we do later, host=="" is rejected.
 	if host == "" {
-		return nil, newDNSError(errNoSuchHost, host, "")
+		return nil, &DNSError{Err: errNoSuchHost.Error(), Name: host, IsNotFound: true}
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {
 		return []IPAddr{{IP: IP(ip.AsSlice()).To16(), Zone: ip.Zone()}}, nil
@@ -354,7 +344,12 @@ func (r *Resolver) lookupIPAddr(ctx context.Context, network, host string) ([]IP
 		} else {
 			go dnsWaitGroupDone(ch, lookupGroupCancel)
 		}
-		err := newDNSError(mapErr(ctx.Err()), host, "")
+		ctxErr := ctx.Err()
+		err := &DNSError{
+			Err:       mapErr(ctxErr).Error(),
+			Name:      host,
+			IsTimeout: ctxErr == context.DeadlineExceeded,
+		}
 		if trace != nil && trace.DNSDone != nil {
 			trace.DNSDone(nil, false, err)
 		}
@@ -365,7 +360,17 @@ func (r *Resolver) lookupIPAddr(ctx context.Context, network, host string) ([]IP
 		err := r.Err
 		if err != nil {
 			if _, ok := err.(*DNSError); !ok {
-				err = newDNSError(mapErr(err), host, "")
+				isTimeout := false
+				if err == context.DeadlineExceeded {
+					isTimeout = true
+				} else if terr, ok := err.(timeout); ok {
+					isTimeout = terr.Timeout()
+				}
+				err = &DNSError{
+					Err:       err.Error(),
+					Name:      host,
+					IsTimeout: isTimeout,
+				}
 			}
 		}
 		if trace != nil && trace.DNSDone != nil {
@@ -402,20 +407,18 @@ func ipAddrsEface(addrs []IPAddr) []any {
 
 // LookupPort looks up the port for the given network and service.
 //
-// LookupPort uses [context.Background] internally; to specify the context, use
-// [Resolver.LookupPort].
+// LookupPort uses context.Background internally; to specify the context, use
+// Resolver.LookupPort.
 func LookupPort(network, service string) (port int, err error) {
 	return DefaultResolver.LookupPort(context.Background(), network, service)
 }
 
 // LookupPort looks up the port for the given network and service.
-//
-// The network must be one of "tcp", "tcp4", "tcp6", "udp", "udp4", "udp6" or "ip".
 func (r *Resolver) LookupPort(ctx context.Context, network, service string) (port int, err error) {
 	port, needsLookup := parsePort(service)
 	if needsLookup {
 		switch network {
-		case "tcp", "tcp4", "tcp6", "udp", "udp4", "udp6", "ip":
+		case "tcp", "tcp4", "tcp6", "udp", "udp4", "udp6":
 		case "": // a hint wildcard for Go 1.0 undocumented behavior
 			network = "ip"
 		default:
@@ -434,7 +437,7 @@ func (r *Resolver) LookupPort(ctx context.Context, network, service string) (por
 
 // LookupCNAME returns the canonical name for the given host.
 // Callers that do not care about the canonical name can call
-// [LookupHost] or [LookupIP] directly; both take care of resolving
+// LookupHost or LookupIP directly; both take care of resolving
 // the canonical name as part of the lookup.
 //
 // A canonical name is the final name after following zero
@@ -446,15 +449,15 @@ func (r *Resolver) LookupPort(ctx context.Context, network, service string) (por
 // The returned canonical name is validated to be a properly
 // formatted presentation-format domain name.
 //
-// LookupCNAME uses [context.Background] internally; to specify the context, use
-// [Resolver.LookupCNAME].
+// LookupCNAME uses context.Background internally; to specify the context, use
+// Resolver.LookupCNAME.
 func LookupCNAME(host string) (cname string, err error) {
 	return DefaultResolver.LookupCNAME(context.Background(), host)
 }
 
 // LookupCNAME returns the canonical name for the given host.
 // Callers that do not care about the canonical name can call
-// [LookupHost] or [LookupIP] directly; both take care of resolving
+// LookupHost or LookupIP directly; both take care of resolving
 // the canonical name as part of the lookup.
 //
 // A canonical name is the final name after following zero
@@ -476,7 +479,7 @@ func (r *Resolver) LookupCNAME(ctx context.Context, host string) (string, error)
 	return cname, nil
 }
 
-// LookupSRV tries to resolve an [SRV] query of the given service,
+// LookupSRV tries to resolve an SRV query of the given service,
 // protocol, and domain name. The proto is "tcp" or "udp".
 // The returned records are sorted by priority and randomized
 // by weight within a priority.
@@ -494,7 +497,7 @@ func LookupSRV(service, proto, name string) (cname string, addrs []*SRV, err err
 	return DefaultResolver.LookupSRV(context.Background(), service, proto, name)
 }
 
-// LookupSRV tries to resolve an [SRV] query of the given service,
+// LookupSRV tries to resolve an SRV query of the given service,
 // protocol, and domain name. The proto is "tcp" or "udp".
 // The returned records are sorted by priority and randomized
 // by weight within a priority.
@@ -539,8 +542,8 @@ func (r *Resolver) LookupSRV(ctx context.Context, service, proto, name string) (
 // invalid names, those records are filtered out and an error
 // will be returned alongside the remaining results, if any.
 //
-// LookupMX uses [context.Background] internally; to specify the context, use
-// [Resolver.LookupMX].
+// LookupMX uses context.Background internally; to specify the context, use
+// Resolver.LookupMX.
 func LookupMX(name string) ([]*MX, error) {
 	return DefaultResolver.LookupMX(context.Background(), name)
 }
@@ -579,8 +582,8 @@ func (r *Resolver) LookupMX(ctx context.Context, name string) ([]*MX, error) {
 // invalid names, those records are filtered out and an error
 // will be returned alongside the remaining results, if any.
 //
-// LookupNS uses [context.Background] internally; to specify the context, use
-// [Resolver.LookupNS].
+// LookupNS uses context.Background internally; to specify the context, use
+// Resolver.LookupNS.
 func LookupNS(name string) ([]*NS, error) {
 	return DefaultResolver.LookupNS(context.Background(), name)
 }
@@ -614,8 +617,8 @@ func (r *Resolver) LookupNS(ctx context.Context, name string) ([]*NS, error) {
 
 // LookupTXT returns the DNS TXT records for the given domain name.
 //
-// LookupTXT uses [context.Background] internally; to specify the context, use
-// [Resolver.LookupTXT].
+// LookupTXT uses context.Background internally; to specify the context, use
+// Resolver.LookupTXT.
 func LookupTXT(name string) ([]string, error) {
 	return DefaultResolver.lookupTXT(context.Background(), name)
 }
@@ -633,10 +636,10 @@ func (r *Resolver) LookupTXT(ctx context.Context, name string) ([]string, error)
 // out and an error will be returned alongside the remaining results, if any.
 //
 // When using the host C library resolver, at most one result will be
-// returned. To bypass the host resolver, use a custom [Resolver].
+// returned. To bypass the host resolver, use a custom Resolver.
 //
-// LookupAddr uses [context.Background] internally; to specify the context, use
-// [Resolver.LookupAddr].
+// LookupAddr uses context.Background internally; to specify the context, use
+// Resolver.LookupAddr.
 func LookupAddr(addr string) (names []string, err error) {
 	return DefaultResolver.LookupAddr(context.Background(), addr)
 }

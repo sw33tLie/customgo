@@ -90,11 +90,7 @@ func LockOSThreadAlt() {
 			println("locked thread reused")
 			os.Exit(1)
 		}
-		exists, supported, err := tidExists(subTID)
-		if err != nil {
-			println("error:", err.Error())
-			return
-		}
+		exists, supported := tidExists(subTID)
 		if !supported || !exists {
 			goto ok
 		}

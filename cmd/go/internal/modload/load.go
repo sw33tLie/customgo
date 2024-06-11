@@ -98,15 +98,13 @@ import (
 	"errors"
 	"fmt"
 	"go/build"
-	"internal/diff"
 	"io/fs"
-	"maps"
 	"os"
 	"path"
 	pathpkg "path"
 	"path/filepath"
+	"reflect"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -154,11 +152,6 @@ type PackageOpts struct {
 	// the minimal dependencies needed to reproducibly reload the requested
 	// packages.
 	Tidy bool
-
-	// TidyDiff, if true, causes tidy not to modify go.mod or go.sum but
-	// instead print the necessary changes as a unified diff. It exits
-	// with a non-zero code if the diff is not empty.
-	TidyDiff bool
 
 	// TidyCompatibleVersion is the oldest Go version that must be able to
 	// reproducibly reload the requested packages.
@@ -437,36 +430,6 @@ func LoadPackages(ctx context.Context, opts PackageOpts, patterns ...string) (ma
 			}
 		}
 
-		if opts.TidyDiff {
-			cfg.BuildMod = "readonly"
-			loaded = ld
-			requirements = loaded.requirements
-			currentGoMod, updatedGoMod, _, err := UpdateGoModFromReqs(ctx, WriteOpts{})
-			if err != nil {
-				base.Fatal(err)
-			}
-			goModDiff := diff.Diff("current/go.mod", currentGoMod, "tidy/go.mod", updatedGoMod)
-
-			modfetch.TrimGoSum(keep)
-			// Dropping compatibility for 1.16 may result in a strictly smaller go.sum.
-			// Update the keep map with only the loaded.requirements.
-			if gover.Compare(compatVersion, "1.16") > 0 {
-				keep = keepSums(ctx, loaded, requirements, addBuildListZipSums)
-			}
-			currentGoSum, tidyGoSum := modfetch.TidyGoSum(keep)
-			goSumDiff := diff.Diff("current/go.sum", currentGoSum, "tidy/go.sum", tidyGoSum)
-
-			if len(goModDiff) > 0 {
-				fmt.Println(string(goModDiff))
-				base.SetExitStatus(1)
-			}
-			if len(goSumDiff) > 0 {
-				fmt.Println(string(goSumDiff))
-				base.SetExitStatus(1)
-			}
-			base.Exit()
-		}
-
 		if !ExplicitWriteGoMod {
 			modfetch.TrimGoSum(keep)
 
@@ -479,10 +442,6 @@ func LoadPackages(ctx context.Context, opts PackageOpts, patterns ...string) (ma
 				base.Fatal(err)
 			}
 		}
-	}
-
-	if opts.TidyDiff && !opts.Tidy {
-		panic("TidyDiff is set but Tidy is not.")
 	}
 
 	// Success! Update go.mod and go.sum (if needed) and return the results.
@@ -612,7 +571,7 @@ func resolveLocalPackage(ctx context.Context, dir string, rs *Requirements) (str
 					return "", fmt.Errorf("without -mod=vendor, directory %s has no package path", absDir)
 				}
 
-				readVendorList(VendorDir())
+				readVendorList(mainModule)
 				if _, ok := vendorPkgModule[pkg]; !ok {
 					return "", fmt.Errorf("directory %s is not a package listed in vendor/modules.txt", absDir)
 				}
@@ -818,7 +777,7 @@ func (mms *MainModuleSet) DirImportPath(ctx context.Context, dir string) (path s
 				longestPrefixVersion = v
 				suffix := filepath.ToSlash(str.TrimFilePathPrefix(dir, modRoot))
 				if strings.HasPrefix(suffix, "vendor/") {
-					longestPrefixPath = suffix[len("vendor/"):]
+					longestPrefixPath = strings.TrimPrefix(suffix, "vendor/")
 					continue
 				}
 				longestPrefixPath = pathpkg.Join(mms.PathPrefix(v), suffix)
@@ -1222,7 +1181,7 @@ func loadFromRoots(ctx context.Context, params loaderParams) *loader {
 			ld.error(err)
 			break
 		}
-		if slices.Equal(rs.rootModules, ld.requirements.rootModules) {
+		if reflect.DeepEqual(rs.rootModules, ld.requirements.rootModules) {
 			// Something is deeply wrong. resolveMissingImports gave us a non-empty
 			// set of modules to add to the graph, but adding those modules had no
 			// effect — either they were already in the graph, or updateRoots did not
@@ -1360,7 +1319,7 @@ func (ld *loader) updateRequirements(ctx context.Context) (changed bool, err err
 	// imports.AnyTags, then we didn't necessarily load every package that
 	// contributes “direct” imports — so we can't safely mark existing direct
 	// dependencies in ld.requirements as indirect-only. Propagate them as direct.
-	loadedDirect := ld.allPatternIsRoot && maps.Equal(ld.Tags, imports.AnyTags())
+	loadedDirect := ld.allPatternIsRoot && reflect.DeepEqual(ld.Tags, imports.AnyTags())
 	if loadedDirect {
 		direct = make(map[string]bool)
 	} else {
@@ -1395,15 +1354,6 @@ func (ld *loader) updateRequirements(ctx context.Context) (changed bool, err err
 				// In workspace mode / workspace pruning mode, the roots are the main modules
 				// rather than the main module's direct dependencies. The check below on the selected
 				// roots does not apply.
-				if cfg.BuildMod == "vendor" {
-					// In workspace vendor mode, we don't need to load the requirements of the workspace
-					// modules' dependencies so the check below doesn't work. But that's okay, because
-					// checking whether modules are required directly for the purposes of pruning is
-					// less important in vendor mode: if we were able to load the package, we have
-					// everything we need  to build the package, and dependencies' tests are pruned out
-					// of the vendor directory anyway.
-					continue
-				}
 				if mg, err := rs.Graph(ctx); err != nil {
 					return false, err
 				} else if _, ok := mg.RequiredBy(dep.mod); !ok {
@@ -1415,7 +1365,10 @@ func (ld *loader) updateRequirements(ctx context.Context) (changed bool, err err
 						Module:       dep.mod,
 					}
 				}
-			} else if pkg.err == nil && cfg.BuildMod != "mod" {
+				continue
+			}
+
+			if pkg.err == nil && cfg.BuildMod != "mod" {
 				if v, ok := rs.rootSelected(dep.mod.Path); !ok || v != dep.mod.Version {
 					// dep.mod is not an explicit dependency, but needs to be.
 					// Because we are not in "mod" mode, we will not be able to update it.
@@ -1503,7 +1456,7 @@ func (ld *loader) updateRequirements(ctx context.Context) (changed bool, err err
 		// packages present in the standard library. If it has changed, it's best to
 		// reload packages once more to be sure everything is stable.
 		changed = true
-	} else if rs != ld.requirements && !slices.Equal(rs.rootModules, ld.requirements.rootModules) {
+	} else if rs != ld.requirements && !reflect.DeepEqual(rs.rootModules, ld.requirements.rootModules) {
 		// The roots of the module graph have changed in some way (not just the
 		// "direct" markings). Check whether the changes affected any of the loaded
 		// packages.
@@ -1817,7 +1770,7 @@ func (ld *loader) preloadRootModules(ctx context.Context, rootPkgs []string) (ch
 		ld.exitIfErrors(ctx)
 		return false
 	}
-	if slices.Equal(rs.rootModules, ld.requirements.rootModules) {
+	if reflect.DeepEqual(rs.rootModules, ld.requirements.rootModules) {
 		// Something is deeply wrong. resolveMissingImports gave us a non-empty
 		// set of modules to add to the graph, but adding those modules had no
 		// effect — either they were already in the graph, or updateRoots did not

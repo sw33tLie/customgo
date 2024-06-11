@@ -14,9 +14,9 @@ import (
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/liveness"
 	"cmd/compile/internal/objw"
-	"cmd/compile/internal/pgoir"
 	"cmd/compile/internal/ssagen"
 	"cmd/compile/internal/staticinit"
+	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/compile/internal/walk"
 	"cmd/internal/obj"
@@ -39,11 +39,6 @@ func enqueueFunc(fn *ir.Func) {
 		return
 	}
 
-	// Don't try compiling dead hidden closure.
-	if fn.IsDeadcodeClosure() {
-		return
-	}
-
 	if clo := fn.OClosure; clo != nil && !ir.IsTrivialClosure(clo) {
 		return // we'll get this as part of its enclosing function
 	}
@@ -57,14 +52,9 @@ func enqueueFunc(fn *ir.Func) {
 		ir.InitLSym(fn, false)
 		types.CalcSize(fn.Type())
 		a := ssagen.AbiForBodylessFuncStackMap(fn)
-		abiInfo := a.ABIAnalyzeFuncType(fn.Type()) // abiInfo has spill/home locations for wrapper
+		abiInfo := a.ABIAnalyzeFuncType(fn.Type().FuncType()) // abiInfo has spill/home locations for wrapper
+		liveness.WriteFuncMap(fn, abiInfo)
 		if fn.ABI == obj.ABI0 {
-			// The current args_stackmap generation assumes the function
-			// is ABI0, and only ABI0 assembly function can have a FUNCDATA
-			// reference to args_stackmap (see cmd/internal/obj/plist.go:Flushplist).
-			// So avoid introducing an args_stackmap if the func is not ABI0.
-			liveness.WriteFuncMap(fn, abiInfo)
-
 			x := ssagen.EmitArgInfo(fn, abiInfo)
 			objw.Global(x, int32(len(x.P)), obj.RODATA|obj.LOCAL)
 		}
@@ -110,15 +100,21 @@ func prepareFunc(fn *ir.Func) {
 	// Calculate parameter offsets.
 	types.CalcSize(fn.Type())
 
+	typecheck.DeclContext = ir.PAUTO
 	ir.CurFunc = fn
 	walk.Walk(fn)
 	ir.CurFunc = nil // enforce no further uses of CurFunc
+	typecheck.DeclContext = ir.PEXTERN
 }
 
 // compileFunctions compiles all functions in compilequeue.
 // It fans out nBackendWorkers to do the work
 // and waits for them to complete.
-func compileFunctions(profile *pgoir.Profile) {
+func compileFunctions() {
+	if len(compilequeue) == 0 {
+		return
+	}
+
 	if race.Enabled {
 		// Randomize compilation order to try to shake out races.
 		tmp := make([]*ir.Func, len(compilequeue))
@@ -185,7 +181,7 @@ func compileFunctions(profile *pgoir.Profile) {
 		for _, fn := range fns {
 			fn := fn
 			queue(func(worker int) {
-				ssagen.Compile(fn, worker, profile)
+				ssagen.Compile(fn, worker)
 				compile(fn.Closures)
 				wg.Done()
 			})

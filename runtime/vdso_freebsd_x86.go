@@ -7,7 +7,7 @@
 package runtime
 
 import (
-	"internal/runtime/atomic"
+	"runtime/internal/atomic"
 	"unsafe"
 )
 

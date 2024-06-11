@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"cmd/internal/src"
-	"cmd/internal/telemetry"
 )
 
 // An errorMsg is a queued error message, waiting to be printed.
@@ -147,6 +146,11 @@ func ErrorfAt(pos src.XPos, code errors.Code, format string, args ...interface{}
 	}
 }
 
+// ErrorfVers reports that a language feature (format, args) requires a later version of Go.
+func ErrorfVers(lang string, format string, args ...interface{}) {
+	Errorf("%s requires %s or later (-lang was set to %s; check go.mod)", fmt.Sprintf(format, args...), lang, Flag.Lang)
+}
+
 // UpdateErrorDot is a clumsy hack that rewrites the last error,
 // if it was "LINE: undefined: NAME", to be "LINE: undefined: NAME in EXPR".
 // It is used to give better error messages for dot (selector) expressions.
@@ -195,8 +199,6 @@ func Fatalf(format string, args ...interface{}) {
 	FatalfAt(Pos, format, args...)
 }
 
-var bugStack = telemetry.NewStackCounter("compile/bug", 16) // 16 is arbitrary; used by gopls and crashmonitor
-
 // FatalfAt reports a fatal error - an internal problem - at pos and exits.
 // If other errors have already been printed, then FatalfAt just quietly exits.
 // (The internal problem may have been caused by incomplete information
@@ -211,8 +213,6 @@ var bugStack = telemetry.NewStackCounter("compile/bug", 16) // 16 is arbitrary; 
 // If -h has been specified, FatalfAt panics to force the usual runtime info dump.
 func FatalfAt(pos src.XPos, format string, args ...interface{}) {
 	FlushErrors()
-
-	bugStack.Inc()
 
 	if Debug.Panic != 0 || numErrors == 0 {
 		fmt.Printf("%v: internal compiler error: ", FmtPos(pos))

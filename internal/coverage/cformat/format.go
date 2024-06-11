@@ -31,13 +31,11 @@ package cformat
 // emit coverage percentages.
 
 import (
-	"cmp"
 	"fmt"
 	"internal/coverage"
 	"internal/coverage/cmerge"
 	"io"
-	"slices"
-	"strings"
+	"sort"
 	"text/tabwriter"
 )
 
@@ -138,27 +136,29 @@ func (fm *Formatter) AddUnit(file string, fname string, isfnlit bool, unit cover
 // include function name as part of the sorting criteria, the thinking
 // being that is better to provide things in the original source order.
 func (p *pstate) sortUnits(units []extcu) {
-	slices.SortFunc(units, func(ui, uj extcu) int {
+	sort.Slice(units, func(i, j int) bool {
+		ui := units[i]
+		uj := units[j]
 		ifile := p.funcs[ui.fnfid].file
 		jfile := p.funcs[uj.fnfid].file
-		if r := strings.Compare(ifile, jfile); r != 0 {
-			return r
+		if ifile != jfile {
+			return ifile < jfile
 		}
 		// NB: not taking function literal flag into account here (no
 		// need, since other fields are guaranteed to be distinct).
-		if r := cmp.Compare(ui.StLine, uj.StLine); r != 0 {
-			return r
+		if units[i].StLine != units[j].StLine {
+			return units[i].StLine < units[j].StLine
 		}
-		if r := cmp.Compare(ui.EnLine, uj.EnLine); r != 0 {
-			return r
+		if units[i].EnLine != units[j].EnLine {
+			return units[i].EnLine < units[j].EnLine
 		}
-		if r := cmp.Compare(ui.StCol, uj.StCol); r != 0 {
-			return r
+		if units[i].StCol != units[j].StCol {
+			return units[i].StCol < units[j].StCol
 		}
-		if r := cmp.Compare(ui.EnCol, uj.EnCol); r != 0 {
-			return r
+		if units[i].EnCol != units[j].EnCol {
+			return units[i].EnCol < units[j].EnCol
 		}
-		return cmp.Compare(ui.NxStmts, uj.NxStmts)
+		return units[i].NxStmts < units[j].NxStmts
 	})
 }
 
@@ -178,7 +178,7 @@ func (fm *Formatter) EmitTextual(w io.Writer) error {
 	for importpath := range fm.pm {
 		pkgs = append(pkgs, importpath)
 	}
-	slices.Sort(pkgs)
+	sort.Strings(pkgs)
 	for _, importpath := range pkgs {
 		p := fm.pm[importpath]
 		units := make([]extcu, 0, len(p.unitTable))
@@ -220,7 +220,7 @@ func (fm *Formatter) EmitPercent(w io.Writer, covpkgs string, noteEmpty bool, ag
 		return nil
 	}
 
-	slices.Sort(pkgs)
+	sort.Strings(pkgs)
 	var totalStmts, coveredStmts uint64
 	for _, importpath := range pkgs {
 		p := fm.pm[importpath]
@@ -278,7 +278,7 @@ func (fm *Formatter) EmitFuncs(w io.Writer) error {
 	for importpath := range fm.pm {
 		pkgs = append(pkgs, importpath)
 	}
-	slices.Sort(pkgs)
+	sort.Strings(pkgs)
 
 	// Emit functions for each package, sorted by import path.
 	for _, importpath := range pkgs {

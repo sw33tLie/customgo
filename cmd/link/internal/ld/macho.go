@@ -195,12 +195,11 @@ const (
 )
 
 const (
-	PLATFORM_MACOS       MachoPlatform = 1
-	PLATFORM_IOS         MachoPlatform = 2
-	PLATFORM_TVOS        MachoPlatform = 3
-	PLATFORM_WATCHOS     MachoPlatform = 4
-	PLATFORM_BRIDGEOS    MachoPlatform = 5
-	PLATFORM_MACCATALYST MachoPlatform = 6
+	PLATFORM_MACOS    MachoPlatform = 1
+	PLATFORM_IOS      MachoPlatform = 2
+	PLATFORM_TVOS     MachoPlatform = 3
+	PLATFORM_WATCHOS  MachoPlatform = 4
+	PLATFORM_BRIDGEOS MachoPlatform = 5
 )
 
 // rebase table opcode
@@ -479,11 +478,13 @@ func (ctxt *Link) domacho() {
 		if ctxt.LinkMode == LinkInternal && machoPlatform == PLATFORM_MACOS {
 			var version uint32
 			switch ctxt.Arch.Family {
-			case sys.ARM64, sys.AMD64:
+			case sys.AMD64:
 				// This must be fairly recent for Apple signing (go.dev/issue/30488).
 				// Having too old a version here was also implicated in some problems
 				// calling into macOS libraries (go.dev/issue/56784).
 				// In general this can be the most recent supported macOS version.
+				version = 10<<16 | 13<<8 | 0<<0 // 10.13.0
+			case sys.ARM64:
 				version = 11<<16 | 0<<8 | 0<<0 // 11.0.0
 			}
 			ml := newMachoLoad(ctxt.Arch, LC_BUILD_VERSION, 4)
@@ -664,8 +665,8 @@ func machoshbits(ctxt *Link, mseg *MachoSeg, sect *sym.Section, segname string) 
 
 func asmbMacho(ctxt *Link) {
 	machlink := doMachoLink(ctxt)
-	if ctxt.IsExternal() {
-		symo := int64(Segdwarf.Fileoff + uint64(Rnd(int64(Segdwarf.Filelen), *FlagRound)) + uint64(machlink))
+	if !*FlagS && ctxt.IsExternal() {
+		symo := int64(Segdwarf.Fileoff + uint64(Rnd(int64(Segdwarf.Filelen), int64(*FlagRound))) + uint64(machlink))
 		ctxt.Out.SeekSet(symo)
 		machoEmitReloc(ctxt)
 	}
@@ -707,7 +708,7 @@ func asmbMacho(ctxt *Link) {
 	}
 
 	/* text */
-	v := Rnd(int64(uint64(HEADR)+Segtext.Length), *FlagRound)
+	v := Rnd(int64(uint64(HEADR)+Segtext.Length), int64(*FlagRound))
 
 	var mstext *MachoSeg
 	if ctxt.LinkMode != LinkExternal {
@@ -802,7 +803,7 @@ func asmbMacho(ctxt *Link) {
 
 		if ctxt.LinkMode != LinkExternal {
 			ms := newMachoSeg("__LINKEDIT", 0)
-			ms.vaddr = uint64(Rnd(int64(Segdata.Vaddr+Segdata.Length), *FlagRound))
+			ms.vaddr = uint64(Rnd(int64(Segdata.Vaddr+Segdata.Length), int64(*FlagRound)))
 			ms.vsize = uint64(s1 + s2 + s3 + s4 + s5 + s6 + s7)
 			ms.fileoffset = uint64(linkoff)
 			ms.filesize = ms.vsize
@@ -876,7 +877,7 @@ func asmbMacho(ctxt *Link) {
 }
 
 func symkind(ldr *loader.Loader, s loader.Sym) int {
-	if t := ldr.SymType(s); t == sym.SDYNIMPORT || t == sym.SHOSTOBJ || t == sym.SUNDEFEXT {
+	if ldr.SymType(s) == sym.SDYNIMPORT {
 		return SymKindUndef
 	}
 	if ldr.AttrCgoExport(s) {
@@ -893,21 +894,13 @@ func collectmachosyms(ctxt *Link) {
 		nkind[symkind(ldr, s)]++
 	}
 
-	// On Mach-O, even with -s, we still need to keep dynamically exported and
-	// referenced symbols. We can strip defined local text and data symbols.
-	// So *FlagS is applied based on symbol type.
-
-	// Add special runtime.text and runtime.etext symbols (which are local).
+	// Add special runtime.text and runtime.etext symbols.
 	// We've already included this symbol in Textp on darwin if ctxt.DynlinkingGo().
 	// See data.go:/textaddress
-	// NOTE: runtime.text.N symbols (if we split text sections) are not added, though,
-	// so we handle them here.
-	if !*FlagS {
-		if !ctxt.DynlinkingGo() {
-			s := ldr.Lookup("runtime.text", 0)
-			if ldr.SymType(s) == sym.STEXT {
-				addsym(s)
-			}
+	if !ctxt.DynlinkingGo() {
+		s := ldr.Lookup("runtime.text", 0)
+		if ldr.SymType(s) == sym.STEXT {
+			addsym(s)
 		}
 		for n := range Segtext.Sections[1:] {
 			s := ldr.Lookup(fmt.Sprintf("runtime.text.%d", n+1), 0)
@@ -917,19 +910,14 @@ func collectmachosyms(ctxt *Link) {
 				break
 			}
 		}
-		if !ctxt.DynlinkingGo() {
-			s := ldr.Lookup("runtime.etext", 0)
-			if ldr.SymType(s) == sym.STEXT {
-				addsym(s)
-			}
+		s = ldr.Lookup("runtime.etext", 0)
+		if ldr.SymType(s) == sym.STEXT {
+			addsym(s)
 		}
 	}
 
 	// Add text symbols.
 	for _, s := range ctxt.Textp {
-		if *FlagS && !ldr.AttrCgoExportDynamic(s) {
-			continue
-		}
 		addsym(s)
 	}
 
@@ -958,23 +946,18 @@ func collectmachosyms(ctxt *Link) {
 			if !shouldBeInSymbolTable(s) {
 				continue
 			}
-			if *FlagS && !ldr.AttrCgoExportDynamic(s) {
-				continue
-			}
 			addsym(s)
-			continue
 		}
 
 		switch t {
 		case sym.SDYNIMPORT, sym.SHOSTOBJ, sym.SUNDEFEXT:
-			// Keep dynamic symbol references even if *FlagS.
 			addsym(s)
 		}
 
 		// Some 64-bit functions have a "$INODE64" or "$INODE64$UNIX2003" suffix.
 		if t == sym.SDYNIMPORT && ldr.SymDynimplib(s) == "/usr/lib/libSystem.B.dylib" {
 			// But only on macOS.
-			if machoPlatform == PLATFORM_MACOS || machoPlatform == PLATFORM_MACCATALYST {
+			if machoPlatform == PLATFORM_MACOS {
 				switch n := ldr.SymExtname(s); n {
 				case "fdopendir":
 					switch buildcfg.GOARCH {
@@ -1188,7 +1171,7 @@ func doMachoLink(ctxt *Link) int64 {
 	}
 
 	if size > 0 {
-		linkoff = Rnd(int64(uint64(HEADR)+Segtext.Length), *FlagRound) + Rnd(int64(Segrelrodata.Filelen), *FlagRound) + Rnd(int64(Segdata.Filelen), *FlagRound) + Rnd(int64(Segdwarf.Filelen), *FlagRound)
+		linkoff = Rnd(int64(uint64(HEADR)+Segtext.Length), int64(*FlagRound)) + Rnd(int64(Segrelrodata.Filelen), int64(*FlagRound)) + Rnd(int64(Segdata.Filelen), int64(*FlagRound)) + Rnd(int64(Segdwarf.Filelen), int64(*FlagRound))
 		ctxt.Out.SeekSet(linkoff)
 
 		ctxt.Out.Write(ldr.Data(s1))
@@ -1203,7 +1186,7 @@ func doMachoLink(ctxt *Link) int64 {
 		size += ldr.SymSize(s7)
 	}
 
-	return Rnd(size, *FlagRound)
+	return Rnd(size, int64(*FlagRound))
 }
 
 func machorelocsect(ctxt *Link, out *OutBuf, sect *sym.Section, syms []loader.Sym) {

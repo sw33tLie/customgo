@@ -13,8 +13,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
-	"slices"
-	"strings"
+	"sort"
 )
 
 const debugText = `<html>
@@ -52,7 +51,7 @@ type methodArray []debugMethod
 type debugService struct {
 	Service *service
 	Name    string
-	Method  []debugMethod
+	Method  methodArray
 }
 
 type serviceArray []debugService
@@ -75,19 +74,15 @@ func (server debugHTTP) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var services serviceArray
 	server.serviceMap.Range(func(snamei, svci any) bool {
 		svc := svci.(*service)
-		ds := debugService{svc, snamei.(string), make([]debugMethod, 0, len(svc.method))}
+		ds := debugService{svc, snamei.(string), make(methodArray, 0, len(svc.method))}
 		for mname, method := range svc.method {
 			ds.Method = append(ds.Method, debugMethod{method, mname})
 		}
-		slices.SortFunc(ds.Method, func(a, b debugMethod) int {
-			return strings.Compare(a.Name, b.Name)
-		})
+		sort.Sort(ds.Method)
 		services = append(services, ds)
 		return true
 	})
-	slices.SortFunc(services, func(a, b debugService) int {
-		return strings.Compare(a.Name, b.Name)
-	})
+	sort.Sort(services)
 	err := debug.Execute(w, services)
 	if err != nil {
 		fmt.Fprintln(w, "rpc: error executing template:", err.Error())

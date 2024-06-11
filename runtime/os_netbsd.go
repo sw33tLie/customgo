@@ -7,7 +7,7 @@ package runtime
 import (
 	"internal/abi"
 	"internal/goarch"
-	"internal/runtime/atomic"
+	"runtime/internal/atomic"
 	"unsafe"
 )
 
@@ -274,11 +274,11 @@ func osinit() {
 var urandom_dev = []byte("/dev/urandom\x00")
 
 //go:nosplit
-func readRandom(r []byte) int {
+func getRandomData(r []byte) {
 	fd := open(&urandom_dev[0], 0 /* O_RDONLY */, 0)
 	n := read(fd, unsafe.Pointer(&r[0]), int32(len(r)))
 	closefd(fd)
-	return int(n)
+	extendRandom(r, int(n))
 }
 
 func goenvs() {
@@ -316,8 +316,6 @@ func minit() {
 //go:nosplit
 func unminit() {
 	unminitSignals()
-	// Don't clear procid, it is used by locking (semawake), and locking
-	// must continue working after unminit.
 }
 
 // Called from exitm, but not from drop, to undo the effect of thread-owned

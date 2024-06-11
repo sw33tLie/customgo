@@ -2,10 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Though the debug call function feature is not enabled on
-// ppc64, inserted ppc64 to avoid missing Go declaration error
-// for debugCallPanicked while building runtime.test
-//go:build amd64 || arm64 || ppc64le || ppc64
+//go:build amd64 || arm64
 
 package runtime
 
@@ -86,7 +83,7 @@ func debugCallCheck(pc uintptr) string {
 		if pc != f.entry() {
 			pc--
 		}
-		up := pcdatavalue(f, abi.PCDATA_UnsafePoint, pc)
+		up := pcdatavalue(f, abi.PCDATA_UnsafePoint, pc, nil)
 		if up != abi.UnsafePointSafe {
 			// Not at a safe point.
 			ret = debugCallUnsafePoint
@@ -105,17 +102,10 @@ func debugCallCheck(pc uintptr) string {
 //
 //go:nosplit
 func debugCallWrap(dispatch uintptr) {
+	var lockedm bool
 	var lockedExt uint32
 	callerpc := getcallerpc()
 	gp := getg()
-
-	// Lock ourselves to the OS thread.
-	//
-	// Debuggers rely on us running on the same thread until we get to
-	// dispatch the function they asked as to.
-	//
-	// We're going to transfer this to the new G we just created.
-	lockOSThread()
 
 	// Create a new goroutine to execute the call on. Run this on
 	// the system stack to avoid growing our stack.
@@ -124,29 +114,34 @@ func debugCallWrap(dispatch uintptr) {
 		// closure and start the goroutine with that closure, but the compiler disallows
 		// implicit closure allocation in the runtime.
 		fn := debugCallWrap1
-		newg := newproc1(*(**funcval)(unsafe.Pointer(&fn)), gp, callerpc, false, waitReasonZero)
+		newg := newproc1(*(**funcval)(unsafe.Pointer(&fn)), gp, callerpc)
 		args := &debugCallWrapArgs{
 			dispatch: dispatch,
 			callingG: gp,
 		}
 		newg.param = unsafe.Pointer(args)
 
-		// Transfer locked-ness to the new goroutine.
-		// Save lock state to restore later.
-		mp := gp.m
-		if mp != gp.lockedm.ptr() {
-			throw("inconsistent lockedm")
-		}
-		// Save the external lock count and clear it so
-		// that it can't be unlocked from the debug call.
-		// Note: we already locked internally to the thread,
-		// so if we were locked before we're still locked now.
-		lockedExt = mp.lockedExt
-		mp.lockedExt = 0
+		// If the current G is locked, then transfer that
+		// locked-ness to the new goroutine.
+		if gp.lockedm != 0 {
+			// Save lock state to restore later.
+			mp := gp.m
+			if mp != gp.lockedm.ptr() {
+				throw("inconsistent lockedm")
+			}
 
-		mp.lockedg.set(newg)
-		newg.lockedm.set(mp)
-		gp.lockedm = 0
+			lockedm = true
+			lockedExt = mp.lockedExt
+
+			// Transfer external lock count to internal so
+			// it can't be unlocked from the debug call.
+			mp.lockedInt++
+			mp.lockedExt = 0
+
+			mp.lockedg.set(newg)
+			newg.lockedm.set(mp)
+			gp.lockedm = 0
+		}
 
 		// Mark the calling goroutine as being at an async
 		// safe-point, since it has a few conservative frames
@@ -166,17 +161,10 @@ func debugCallWrap(dispatch uintptr) {
 		gp.schedlink = 0
 
 		// Park the calling goroutine.
-		trace := traceAcquire()
-		if trace.ok() {
-			// Trace the event before the transition. It may take a
-			// stack trace, but we won't own the stack after the
-			// transition anymore.
-			trace.GoPark(traceBlockDebugCall, 1)
+		if traceEnabled() {
+			traceGoPark(traceBlockDebugCall, 1)
 		}
 		casGToWaiting(gp, _Grunning, waitReasonDebugCall)
-		if trace.ok() {
-			traceRelease(trace)
-		}
 		dropg()
 
 		// Directly execute the new goroutine. The debug
@@ -189,13 +177,13 @@ func debugCallWrap(dispatch uintptr) {
 	// We'll resume here when the call returns.
 
 	// Restore locked state.
-	mp := gp.m
-	mp.lockedExt = lockedExt
-	mp.lockedg.set(gp)
-	gp.lockedm.set(mp)
-
-	// Undo the lockOSThread we did earlier.
-	unlockOSThread()
+	if lockedm {
+		mp := gp.m
+		mp.lockedExt = lockedExt
+		mp.lockedInt--
+		mp.lockedg.set(gp)
+		gp.lockedm.set(mp)
+	}
 
 	gp.asyncSafePoint = false
 }
@@ -232,28 +220,19 @@ func debugCallWrap1() {
 		// Switch back to the calling goroutine. At some point
 		// the scheduler will schedule us again and we'll
 		// finish exiting.
-		trace := traceAcquire()
-		if trace.ok() {
-			// Trace the event before the transition. It may take a
-			// stack trace, but we won't own the stack after the
-			// transition anymore.
-			trace.GoSched()
+		if traceEnabled() {
+			traceGoSched()
 		}
 		casgstatus(gp, _Grunning, _Grunnable)
-		if trace.ok() {
-			traceRelease(trace)
-		}
 		dropg()
 		lock(&sched.lock)
 		globrunqput(gp)
 		unlock(&sched.lock)
 
-		trace = traceAcquire()
-		casgstatus(callingG, _Gwaiting, _Grunnable)
-		if trace.ok() {
-			trace.GoUnpark(callingG, 0)
-			traceRelease(trace)
+		if traceEnabled() {
+			traceGoUnpark(callingG, 0)
 		}
+		casgstatus(callingG, _Gwaiting, _Grunnable)
 		execute(callingG, true)
 	})
 }

@@ -11,7 +11,7 @@ import (
 	. "path/filepath"
 	"reflect"
 	"runtime"
-	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -107,6 +107,16 @@ func TestMatch(t *testing.T) {
 	}
 }
 
+// contains reports whether vector contains the string s.
+func contains(vector []string, s string) bool {
+	for _, elem := range vector {
+		if elem == s {
+			return true
+		}
+	}
+	return false
+}
+
 var globTests = []struct {
 	pattern, result string
 }{
@@ -129,7 +139,7 @@ func TestGlob(t *testing.T) {
 			t.Errorf("Glob error for %q: %s", pattern, err)
 			continue
 		}
-		if !slices.Contains(matches, result) {
+		if !contains(matches, result) {
 			t.Errorf("Glob(%#q) = %#v want %v", pattern, matches, result)
 		}
 	}
@@ -204,7 +214,7 @@ func TestGlobSymlink(t *testing.T) {
 		if err != nil {
 			t.Errorf("GlobSymlink error for %q: %s", dest, err)
 		}
-		if !slices.Contains(matches, dest) {
+		if !contains(matches, dest) {
 			t.Errorf("Glob(%#q) = %#v want %v", dest, matches, dest)
 		}
 	}
@@ -220,7 +230,7 @@ func (test *globTest) buildWant(root string) []string {
 	for _, m := range test.matches {
 		want = append(want, root+FromSlash(m))
 	}
-	slices.Sort(want)
+	sort.Strings(want)
 	return want
 }
 
@@ -230,7 +240,7 @@ func (test *globTest) globAbs(root, rootPattern string) error {
 	if err != nil {
 		return err
 	}
-	slices.Sort(have)
+	sort.Strings(have)
 	want := test.buildWant(root + `\`)
 	if strings.Join(want, "_") == strings.Join(have, "_") {
 		return nil
@@ -244,7 +254,7 @@ func (test *globTest) globRel(root string) error {
 	if err != nil {
 		return err
 	}
-	slices.Sort(have)
+	sort.Strings(have)
 	want := test.buildWant(root)
 	if strings.Join(want, "_") == strings.Join(have, "_") {
 		return nil

@@ -105,7 +105,7 @@ func WriteExpr(buf *bytes.Buffer, x ast.Expr) {
 		WriteExpr(buf, x.Fun)
 		buf.WriteByte('(')
 		writeExprList(buf, x.Args)
-		if hasDots(x) {
+		if x.Ellipsis.IsValid() {
 			buf.WriteString("...")
 		}
 		buf.WriteByte(')')

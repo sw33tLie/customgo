@@ -19,10 +19,6 @@ const (
 	active_spin_cnt = 30
 )
 
-func mutexContended(l *mutex) bool {
-	return false
-}
-
 func lock(l *mutex) {
 	lockWithRank(l, getLockRank(l))
 }

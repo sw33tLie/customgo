@@ -147,7 +147,8 @@ var predeclared = []types.Type{
 	// comparable
 	types.Universe.Lookup("comparable").Type(),
 
-	// "any" has special handling: see usage of predeclared.
+	// any
+	types.Universe.Lookup("any").Type(),
 }
 
 type anyType struct{}

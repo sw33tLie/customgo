@@ -17,7 +17,7 @@ import (
 
 func main() {
 	Package("crypto/internal/edwards25519/field")
-	ConstraintExpr("!purego")
+	ConstraintExpr("amd64,gc,!purego")
 	feMul()
 	feSquare()
 	Generate()

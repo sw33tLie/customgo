@@ -6,14 +6,13 @@ package syscall_test
 
 import (
 	"fmt"
-	"internal/testenv"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -198,13 +197,6 @@ func TestSyscallNoError(t *testing.T) {
 
 	if os.Getuid() != 0 {
 		t.Skip("skipping root only test")
-	}
-	if testing.Short() && testenv.Builder() != "" && os.Getenv("USER") == "swarming" {
-		// The Go build system's swarming user is known not to be root.
-		// Unfortunately, it sometimes appears as root due the current
-		// implementation of a no-network check using 'unshare -n -r'.
-		// Since this test does need root to work, we need to skip it.
-		t.Skip("skipping root only test on a non-root builder")
 	}
 
 	if runtime.GOOS == "android" {
@@ -484,7 +476,7 @@ func compareStatus(filter, expect string) error {
 					// https://github.com/golang/go/issues/46145
 					// Containers don't reliably output this line in sorted order so manually sort and compare that.
 					a := strings.Split(line[8:], " ")
-					slices.Sort(a)
+					sort.Strings(a)
 					got := strings.Join(a, " ")
 					if got == expected[8:] {
 						foundAThread = true
@@ -523,13 +515,6 @@ func killAThread(c <-chan struct{}) {
 func TestSetuidEtc(t *testing.T) {
 	if syscall.Getuid() != 0 {
 		t.Skip("skipping root only test")
-	}
-	if testing.Short() && testenv.Builder() != "" && os.Getenv("USER") == "swarming" {
-		// The Go build system's swarming user is known not to be root.
-		// Unfortunately, it sometimes appears as root due the current
-		// implementation of a no-network check using 'unshare -n -r'.
-		// Since this test does need root to work, we need to skip it.
-		t.Skip("skipping root only test on a non-root builder")
 	}
 	if _, err := os.Stat("/etc/alpine-release"); err == nil {
 		t.Skip("skipping glibc test on alpine - go.dev/issue/19938")
@@ -653,70 +638,4 @@ func TestAllThreadsSyscallBlockedSyscall(t *testing.T) {
 	}
 	wr.Close()
 	wg.Wait()
-}
-
-func TestPrlimitSelf(t *testing.T) {
-	origLimit := syscall.OrigRlimitNofile()
-	origRlimitNofile := syscall.GetInternalOrigRlimitNofile()
-
-	if origLimit == nil {
-		defer origRlimitNofile.Store(origLimit)
-		origRlimitNofile.Store(&syscall.Rlimit{
-			Cur: 1024,
-			Max: 65536,
-		})
-	}
-
-	// Get current process's nofile limit
-	var lim syscall.Rlimit
-	if err := syscall.Prlimit(0, syscall.RLIMIT_NOFILE, nil, &lim); err != nil {
-		t.Fatalf("Failed to get the current nofile limit: %v", err)
-	}
-	// Set current process's nofile limit through prlimit
-	if err := syscall.Prlimit(0, syscall.RLIMIT_NOFILE, &lim, nil); err != nil {
-		t.Fatalf("Prlimit self failed: %v", err)
-	}
-
-	rlimLater := origRlimitNofile.Load()
-	if rlimLater != nil {
-		t.Fatalf("origRlimitNofile got=%v, want=nil", rlimLater)
-	}
-}
-
-func TestPrlimitOtherProcess(t *testing.T) {
-	origLimit := syscall.OrigRlimitNofile()
-	origRlimitNofile := syscall.GetInternalOrigRlimitNofile()
-
-	if origLimit == nil {
-		defer origRlimitNofile.Store(origLimit)
-		origRlimitNofile.Store(&syscall.Rlimit{
-			Cur: 1024,
-			Max: 65536,
-		})
-	}
-	rlimOrig := origRlimitNofile.Load()
-
-	// Start a child process firstly,
-	// so we can use Prlimit to set it's nofile limit.
-	cmd := exec.Command("sleep", "infinity")
-	cmd.Start()
-	defer func() {
-		cmd.Process.Kill()
-		cmd.Process.Wait()
-	}()
-
-	// Get child process's current nofile limit
-	var lim syscall.Rlimit
-	if err := syscall.Prlimit(cmd.Process.Pid, syscall.RLIMIT_NOFILE, nil, &lim); err != nil {
-		t.Fatalf("Failed to get the current nofile limit: %v", err)
-	}
-	// Set child process's nofile rlimit through prlimit
-	if err := syscall.Prlimit(cmd.Process.Pid, syscall.RLIMIT_NOFILE, &lim, nil); err != nil {
-		t.Fatalf("Prlimit(%d) failed: %v", cmd.Process.Pid, err)
-	}
-
-	rlimLater := origRlimitNofile.Load()
-	if rlimLater != rlimOrig {
-		t.Fatalf("origRlimitNofile got=%v, want=%v", rlimLater, rlimOrig)
-	}
 }

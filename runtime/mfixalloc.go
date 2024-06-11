@@ -57,7 +57,9 @@ func (f *fixalloc) init(size uintptr, first func(arg, p unsafe.Pointer), arg uns
 	if size > _FixAllocChunk {
 		throw("runtime: fixalloc size too large")
 	}
-	size = max(size, unsafe.Sizeof(mlink{}))
+	if min := unsafe.Sizeof(mlink{}); size < min {
+		size = min
+	}
 
 	f.size = size
 	f.first = first

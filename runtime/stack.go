@@ -9,7 +9,7 @@ import (
 	"internal/cpu"
 	"internal/goarch"
 	"internal/goos"
-	"internal/runtime/atomic"
+	"runtime/internal/atomic"
 	"runtime/internal/sys"
 	"unsafe"
 )
@@ -415,13 +415,6 @@ func stackalloc(n uint32) stack {
 		v = unsafe.Pointer(s.base())
 	}
 
-	if traceAllocFreeEnabled() {
-		trace := traceTryAcquire()
-		if trace.ok() {
-			trace.GoroutineStackAlloc(uintptr(v), uintptr(n))
-			traceRelease(trace)
-		}
-	}
 	if raceenabled {
 		racemalloc(v, uintptr(n))
 	}
@@ -464,13 +457,6 @@ func stackfree(stk stack) {
 			sysFree(v, n, &memstats.stacks_sys)
 		}
 		return
-	}
-	if traceAllocFreeEnabled() {
-		trace := traceTryAcquire()
-		if trace.ok() {
-			trace.GoroutineStackFree(uintptr(v))
-			traceRelease(trace)
-		}
 	}
 	if msanenabled {
 		msanfree(v, n)
@@ -569,6 +555,7 @@ var ptrnames = []string{
 type adjustinfo struct {
 	old   stack
 	delta uintptr // ptr distance from old to new stack (newbase - oldbase)
+	cache pcvalueCache
 
 	// sghi is the highest sudog.elem on the stack.
 	sghi uintptr
@@ -689,7 +676,7 @@ func adjustframe(frame *stkframe, adjinfo *adjustinfo) {
 		adjustpointer(adjinfo, unsafe.Pointer(frame.varp))
 	}
 
-	locals, args, objs := frame.getStackMap(true)
+	locals, args, objs := frame.getStackMap(&adjinfo.cache, true)
 
 	// Adjust local variables if stack frame has been allocated.
 	if locals.n > 0 {
@@ -776,7 +763,10 @@ func adjustdefers(gp *g, adjinfo *adjustinfo) {
 	for d := gp._defer; d != nil; d = d.link {
 		adjustpointer(adjinfo, unsafe.Pointer(&d.fn))
 		adjustpointer(adjinfo, unsafe.Pointer(&d.sp))
+		adjustpointer(adjinfo, unsafe.Pointer(&d._panic))
 		adjustpointer(adjinfo, unsafe.Pointer(&d.link))
+		adjustpointer(adjinfo, unsafe.Pointer(&d.varp))
+		adjustpointer(adjinfo, unsafe.Pointer(&d.fd))
 	}
 }
 
@@ -1150,40 +1140,21 @@ func gostartcallfn(gobuf *gobuf, fv *funcval) {
 
 // isShrinkStackSafe returns whether it's safe to attempt to shrink
 // gp's stack. Shrinking the stack is only safe when we have precise
-// pointer maps for all frames on the stack. The caller must hold the
-// _Gscan bit for gp or must be running gp itself.
+// pointer maps for all frames on the stack.
 func isShrinkStackSafe(gp *g) bool {
 	// We can't copy the stack if we're in a syscall.
 	// The syscall might have pointers into the stack and
 	// often we don't have precise pointer maps for the innermost
 	// frames.
-	if gp.syscallsp != 0 {
-		return false
-	}
+	//
 	// We also can't copy the stack if we're at an asynchronous
 	// safe-point because we don't have precise pointer maps for
 	// all frames.
-	if gp.asyncSafePoint {
-		return false
-	}
+	//
 	// We also can't *shrink* the stack in the window between the
 	// goroutine calling gopark to park on a channel and
 	// gp.activeStackChans being set.
-	if gp.parkingOnChan.Load() {
-		return false
-	}
-	// We also can't copy the stack while tracing is enabled, and
-	// gp is in _Gwaiting solely to make itself available to the GC.
-	// In these cases, the G is actually executing on the system
-	// stack, and the execution tracer may want to take a stack trace
-	// of the G's stack. Note: it's safe to access gp.waitreason here.
-	// We're only checking if this is true if we took ownership of the
-	// G with the _Gscan bit. This prevents the goroutine from transitioning,
-	// which prevents gp.waitreason from changing.
-	if traceEnabled() && readgstatus(gp)&^_Gscan == _Gwaiting && gp.waitreason.isWaitingForGC() {
-		return false
-	}
-	return true
+	return gp.syscallsp == 0 && !gp.asyncSafePoint && !gp.parkingOnChan.Load()
 }
 
 // Maybe shrink the stack being used by gp.

@@ -115,14 +115,16 @@ func NewTiles(h int, oldTreeSize, newTreeSize int64) []Tile {
 	for level := uint(0); newTreeSize>>(H*level) > 0; level++ {
 		oldN := oldTreeSize >> (H * level)
 		newN := newTreeSize >> (H * level)
-		if oldN == newN {
-			continue
-		}
 		for n := oldN >> H; n < newN>>H; n++ {
 			tiles = append(tiles, Tile{H: h, L: int(level), N: n, W: 1 << H})
 		}
 		n := newN >> H
-		if w := int(newN - n<<H); w > 0 {
+		maxW := int(newN - n<<H)
+		minW := 1
+		if oldN > n<<H {
+			minW = int(oldN - n<<H)
+		}
+		for w := minW; w <= maxW; w++ {
 			tiles = append(tiles, Tile{H: h, L: int(level), N: n, W: w})
 		}
 	}

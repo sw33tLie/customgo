@@ -902,7 +902,6 @@ const (
 	gccgoBuiltinERROR      = 19
 	gccgoBuiltinBYTE       = 20
 	gccgoBuiltinRUNE       = 21
-	gccgoBuiltinANY        = 22
 )
 
 func lookupBuiltinType(typ int) types.Type {
@@ -927,7 +926,6 @@ func lookupBuiltinType(typ int) types.Type {
 		gccgoBuiltinERROR:      types.Universe.Lookup("error").Type(),
 		gccgoBuiltinBYTE:       types.Universe.Lookup("byte").Type(),
 		gccgoBuiltinRUNE:       types.Universe.Lookup("rune").Type(),
-		gccgoBuiltinANY:        types.Universe.Lookup("any").Type(),
 	}[typ]
 }
 
@@ -1065,7 +1063,7 @@ func (p *parser) parseTypes(pkg *types.Package) {
 		p.typeData = append(p.typeData, allTypeData[to.offset:to.offset+to.length])
 	}
 
-	for i := 1; i < exportedp1; i++ {
+	for i := 1; i < int(exportedp1); i++ {
 		p.parseSavedType(pkg, i, nil)
 	}
 }

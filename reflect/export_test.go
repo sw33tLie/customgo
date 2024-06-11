@@ -58,12 +58,12 @@ func FuncLayout(t Type, rcvr Type) (frametype Type, argSize, retOffset uintptr, 
 		inReg = append(inReg, bool2byte(abid.inRegPtrs.Get(i)))
 		outReg = append(outReg, bool2byte(abid.outRegPtrs.Get(i)))
 	}
-	if ft.Kind_&abi.KindGCProg != 0 {
+	if ft.Kind_&kindGCProg != 0 {
 		panic("can't handle gc programs")
 	}
 
 	// Expand frame type's GC bitmap into byte-map.
-	ptrs = ft.Pointers()
+	ptrs = ft.PtrBytes != 0
 	if ptrs {
 		nptrs := ft.PtrBytes / goarch.PtrSize
 		gcdata := ft.GcSlice(0, (nptrs+7)/8)
@@ -80,7 +80,7 @@ func TypeLinks() []string {
 	for i, offs := range offset {
 		rodata := sections[i]
 		for _, off := range offs {
-			typ := (*rtype)(resolveTypeOff(rodata, off))
+			typ := (*rtype)(resolveTypeOff(unsafe.Pointer(rodata), off))
 			r = append(r, typ.String())
 		}
 	}
@@ -97,7 +97,7 @@ func MapBucketOf(x, y Type) Type {
 
 func CachedBucketOf(m Type) Type {
 	t := m.(*rtype)
-	if Kind(t.t.Kind_&abi.KindMask) != Map {
+	if Kind(t.t.Kind_&kindMask) != Map {
 		panic("not map")
 	}
 	tt := (*mapType)(unsafe.Pointer(t))
@@ -164,7 +164,3 @@ func SetArgRegs(ints, floats int, floatSize uintptr) (oldInts, oldFloats int, ol
 }
 
 var MethodValueCallCodePtr = methodValueCallCodePtr
-
-var InternalIsZero = isZero
-
-var IsRegularMemory = isRegularMemory

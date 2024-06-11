@@ -118,7 +118,7 @@ func representableConst(x constant.Value, check *Checker, typ *Basic, rounded *c
 			case Uint64:
 				return 0 <= x
 			default:
-				panic("unreachable")
+				unreachable()
 			}
 		}
 		// x does not fit into int64
@@ -159,7 +159,7 @@ func representableConst(x constant.Value, check *Checker, typ *Basic, rounded *c
 		case UntypedFloat:
 			return true
 		default:
-			panic("unreachable")
+			unreachable()
 		}
 
 	case isComplex(typ):
@@ -191,7 +191,7 @@ func representableConst(x constant.Value, check *Checker, typ *Basic, rounded *c
 		case UntypedComplex:
 			return true
 		default:
-			panic("unreachable")
+			unreachable()
 		}
 
 	case isString(typ):

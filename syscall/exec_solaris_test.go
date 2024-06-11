@@ -34,13 +34,4 @@ func Getpgrp() (pgrp int) {
 	return
 }
 
-func Tcgetpgrp(fd int) (pgid int32, err error) {
-	if errno := ioctlPtr(uintptr(fd), TIOCGPGRP, unsafe.Pointer(&pgid)); errno != 0 {
-		return -1, errno
-	}
-	return pgid, nil
-}
-
-func Tcsetpgrp(fd int, pgid int32) (err error) {
-	return ioctlPtr(uintptr(fd), TIOCSPGRP, unsafe.Pointer(&pgid))
-}
+var IoctlPtr = ioctlPtr

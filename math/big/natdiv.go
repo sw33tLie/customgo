@@ -734,7 +734,7 @@ func (z nat) divRecursive(u, v nat) {
 	tmp := getNat(3 * len(v))
 	temps := make([]*nat, recDepth)
 
-	clear(z)
+	z.clear()
 	z.divRecursiveStep(u, v, 0, tmp, temps)
 
 	// Free temporaries.
@@ -758,7 +758,7 @@ func (z nat) divRecursiveStep(u, v nat, depth int, tmp *nat, temps []*nat) {
 	u = u.norm()
 	v = v.norm()
 	if len(u) == 0 {
-		clear(z)
+		z.clear()
 		return
 	}
 
@@ -816,7 +816,7 @@ func (z nat) divRecursiveStep(u, v nat, depth int, tmp *nat, temps []*nat) {
 
 		// Compute the 2-by-1 guess q̂, leaving r̂ in uu[s:B+n].
 		qhat := *temps[depth]
-		clear(qhat)
+		qhat.clear()
 		qhat.divRecursiveStep(uu[s:B+n], v[s:], depth+1, tmp, temps)
 		qhat = qhat.norm()
 
@@ -833,7 +833,7 @@ func (z nat) divRecursiveStep(u, v nat, depth int, tmp *nat, temps []*nat) {
 		// But we can do the subtraction directly, as in the comment above
 		// and in long division, because we know that q̂ is wrong by at most one.
 		qhatv := tmp.make(3 * n)
-		clear(qhatv)
+		qhatv.clear()
 		qhatv = qhatv.mul(qhat, v[:s])
 		for i := 0; i < 2; i++ {
 			e := qhatv.cmp(uu.norm())
@@ -864,11 +864,11 @@ func (z nat) divRecursiveStep(u, v nat, depth int, tmp *nat, temps []*nat) {
 	// Choose shift = B-1 again.
 	s := B - 1
 	qhat := *temps[depth]
-	clear(qhat)
+	qhat.clear()
 	qhat.divRecursiveStep(u[s:].norm(), v[s:], depth+1, tmp, temps)
 	qhat = qhat.norm()
 	qhatv := tmp.make(3 * n)
-	clear(qhatv)
+	qhatv.clear()
 	qhatv = qhatv.mul(qhat, v[:s])
 	// Set the correct remainder as before.
 	for i := 0; i < 2; i++ {

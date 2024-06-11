@@ -32,7 +32,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -113,8 +112,6 @@ The -x flag prints commands as they are executed. This is useful for
 debugging version control commands when a module is downloaded directly
 from a repository.
 
-For more about build flags, see 'go help build'.
-
 For more about modules, see https://golang.org/ref/mod.
 
 For more about using 'go get' to update the minimum Go version and
@@ -129,6 +126,23 @@ See 'go help gopath-get'.
 
 See also: go build, go install, go clean, go mod.
 	`,
+}
+
+// Note that this help text is a stopgap to make the module-aware get help text
+// available even in non-module settings. It should be deleted when the old get
+// is deleted. It should NOT be considered to set a precedent of having hierarchical
+// help names with dashes.
+var HelpModuleGet = &base.Command{
+	UsageLine: "module-get",
+	Short:     "module-aware go get",
+	Long: `
+The 'go get' command changes behavior depending on whether the
+go command is running in module-aware mode or legacy GOPATH mode.
+This help text, accessible as 'go help module-get' even in legacy GOPATH mode,
+describes 'go get' as it operates in module-aware mode.
+
+Usage: ` + CmdGet.UsageLine + `
+` + CmdGet.Long,
 }
 
 var HelpVCS = &base.Command{
@@ -211,7 +225,7 @@ variable for future go command invocations.
 }
 
 var (
-	getD        dFlag
+	getD        = CmdGet.Flag.Bool("d", true, "")
 	getF        = CmdGet.Flag.Bool("f", false, "")
 	getFix      = CmdGet.Flag.Bool("fix", false, "")
 	getM        = CmdGet.Flag.Bool("m", false, "")
@@ -245,32 +259,9 @@ func (v *upgradeFlag) Set(s string) error {
 
 func (v *upgradeFlag) String() string { return "" }
 
-// dFlag is a custom flag.Value for the deprecated -d flag
-// which will be used to provide warnings or errors if -d
-// is provided.
-type dFlag struct {
-	value bool
-	set   bool
-}
-
-func (v *dFlag) IsBoolFlag() bool { return true }
-
-func (v *dFlag) Set(s string) error {
-	v.set = true
-	value, err := strconv.ParseBool(s)
-	if err != nil {
-		err = errors.New("parse error")
-	}
-	v.value = value
-	return err
-}
-
-func (b *dFlag) String() string { return "" }
-
 func init() {
 	work.AddBuildFlags(CmdGet, work.OmitModFlag)
 	CmdGet.Run = runGet // break init loop
-	CmdGet.Flag.Var(&getD, "d", "")
 	CmdGet.Flag.Var(&getU, "u", "")
 }
 
@@ -281,17 +272,15 @@ func runGet(ctx context.Context, cmd *base.Command, args []string) {
 	default:
 		base.Fatalf("go: unknown upgrade flag -u=%s", getU.rawVersion)
 	}
-	if getD.set {
-		if !getD.value {
-			base.Fatalf("go: -d flag may not be set to false")
-		}
-		fmt.Fprintf(os.Stderr, "go: -d flag is deprecated. -d=true is a no-op\n")
+	// TODO(#43684): in the future (Go 1.20), warn that -d is a no-op.
+	if !*getD {
+		base.Fatalf("go: -d flag may not be disabled")
 	}
 	if *getF {
-		fmt.Fprintf(os.Stderr, "go: -f flag is a no-op\n")
+		fmt.Fprintf(os.Stderr, "go: -f flag is a no-op when using modules\n")
 	}
 	if *getFix {
-		fmt.Fprintf(os.Stderr, "go: -fix flag is a no-op\n")
+		fmt.Fprintf(os.Stderr, "go: -fix flag is a no-op when using modules\n")
 	}
 	if *getM {
 		base.Fatalf("go: -m flag is no longer supported")
@@ -355,7 +344,7 @@ func runGet(ctx context.Context, cmd *base.Command, args []string) {
 			// The result of any version query for a given module — even "upgrade" or
 			// "patch" — is always relative to the build list at the start of
 			// the 'go get' command, not an intermediate state, and is therefore
-			// deterministic and therefore cacheable, and the constraints on the
+			// deterministic and therefore cachable, and the constraints on the
 			// selected version of each module can only narrow as we iterate.
 			//
 			// "all" is functionally very similar to a wildcard pattern. The set of
@@ -1701,6 +1690,7 @@ func (r *resolver) checkPackageProblems(ctx context.Context, pkgPatterns []strin
 			base.Error(err)
 		}
 	}
+	base.ExitIfErrors()
 }
 
 // reportChanges logs version changes to os.Stderr.

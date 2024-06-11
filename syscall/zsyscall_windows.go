@@ -43,6 +43,7 @@ var (
 	modkernel32 = NewLazyDLL(sysdll.Add("kernel32.dll"))
 	modmswsock  = NewLazyDLL(sysdll.Add("mswsock.dll"))
 	modnetapi32 = NewLazyDLL(sysdll.Add("netapi32.dll"))
+	modntdll    = NewLazyDLL(sysdll.Add("ntdll.dll"))
 	modsecur32  = NewLazyDLL(sysdll.Add("secur32.dll"))
 	modshell32  = NewLazyDLL(sysdll.Add("shell32.dll"))
 	moduserenv  = NewLazyDLL(sysdll.Add("userenv.dll"))
@@ -167,6 +168,7 @@ var (
 	procNetApiBufferFree                   = modnetapi32.NewProc("NetApiBufferFree")
 	procNetGetJoinInformation              = modnetapi32.NewProc("NetGetJoinInformation")
 	procNetUserGetInfo                     = modnetapi32.NewProc("NetUserGetInfo")
+	procRtlGetNtVersionNumbers             = modntdll.NewProc("RtlGetNtVersionNumbers")
 	procGetUserNameExW                     = modsecur32.NewProc("GetUserNameExW")
 	procTranslateNameW                     = modsecur32.NewProc("TranslateNameW")
 	procCommandLineToArgvW                 = modshell32.NewProc("CommandLineToArgvW")
@@ -856,8 +858,11 @@ func GetShortPathName(longpath *uint16, shortpath *uint16, buflen uint32) (n uin
 	return
 }
 
-func getStartupInfo(startupInfo *StartupInfo) {
-	Syscall(procGetStartupInfoW.Addr(), 1, uintptr(unsafe.Pointer(startupInfo)), 0, 0)
+func GetStartupInfo(startupInfo *StartupInfo) (err error) {
+	r1, _, e1 := Syscall(procGetStartupInfoW.Addr(), 1, uintptr(unsafe.Pointer(startupInfo)), 0, 0)
+	if r1 == 0 {
+		err = errnoErr(e1)
+	}
 	return
 }
 
@@ -1207,6 +1212,11 @@ func NetUserGetInfo(serverName *uint16, userName *uint16, level uint32, buf **by
 	if r0 != 0 {
 		neterr = Errno(r0)
 	}
+	return
+}
+
+func rtlGetNtVersionNumbers(majorVersion *uint32, minorVersion *uint32, buildNumber *uint32) {
+	Syscall(procRtlGetNtVersionNumbers.Addr(), 3, uintptr(unsafe.Pointer(majorVersion)), uintptr(unsafe.Pointer(minorVersion)), uintptr(unsafe.Pointer(buildNumber)))
 	return
 }
 

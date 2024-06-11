@@ -8,7 +8,6 @@
 // The package is typically only imported for the side effect of
 // registering its HTTP handlers.
 // The handled paths all begin with /debug/pprof/.
-// As of Go 1.22, all the paths must be requested with GET.
 //
 // To use pprof, link this package into your program:
 //
@@ -48,12 +47,12 @@
 //	go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 //
 // Or to look at the goroutine blocking profile, after calling
-// [runtime.SetBlockProfileRate] in your program:
+// runtime.SetBlockProfileRate in your program:
 //
 //	go tool pprof http://localhost:6060/debug/pprof/block
 //
 // Or to look at the holders of contended mutexes, after calling
-// [runtime.SetMutexProfileFraction] in your program:
+// runtime.SetMutexProfileFraction in your program:
 //
 //	go tool pprof http://localhost:6060/debug/pprof/mutex
 //
@@ -76,7 +75,6 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"internal/godebug"
 	"internal/profile"
 	"io"
 	"log"
@@ -93,15 +91,11 @@ import (
 )
 
 func init() {
-	prefix := ""
-	if godebug.New("httpmuxgo121").Value() != "1" {
-		prefix = "GET "
-	}
-	http.HandleFunc(prefix+"/debug/pprof/", Index)
-	http.HandleFunc(prefix+"/debug/pprof/cmdline", Cmdline)
-	http.HandleFunc(prefix+"/debug/pprof/profile", Profile)
-	http.HandleFunc(prefix+"/debug/pprof/symbol", Symbol)
-	http.HandleFunc(prefix+"/debug/pprof/trace", Trace)
+	http.HandleFunc("/debug/pprof/", Index)
+	http.HandleFunc("/debug/pprof/cmdline", Cmdline)
+	http.HandleFunc("/debug/pprof/profile", Profile)
+	http.HandleFunc("/debug/pprof/symbol", Symbol)
+	http.HandleFunc("/debug/pprof/trace", Trace)
 }
 
 // Cmdline responds with the running program's
@@ -120,14 +114,9 @@ func sleep(r *http.Request, d time.Duration) {
 	}
 }
 
-func configureWriteDeadline(w http.ResponseWriter, r *http.Request, seconds float64) {
+func durationExceedsWriteTimeout(r *http.Request, seconds float64) bool {
 	srv, ok := r.Context().Value(http.ServerContextKey).(*http.Server)
-	if ok && srv.WriteTimeout > 0 {
-		timeout := srv.WriteTimeout + time.Duration(seconds*float64(time.Second))
-
-		rc := http.NewResponseController(w)
-		rc.SetWriteDeadline(time.Now().Add(timeout))
-	}
+	return ok && srv.WriteTimeout != 0 && seconds >= srv.WriteTimeout.Seconds()
 }
 
 func serveError(w http.ResponseWriter, status int, txt string) {
@@ -148,7 +137,10 @@ func Profile(w http.ResponseWriter, r *http.Request) {
 		sec = 30
 	}
 
-	configureWriteDeadline(w, r, float64(sec))
+	if durationExceedsWriteTimeout(r, float64(sec)) {
+		serveError(w, http.StatusBadRequest, "profile duration exceeds server's WriteTimeout")
+		return
+	}
 
 	// Set Content Type assuming StartCPUProfile will work,
 	// because if it does it starts writing.
@@ -174,7 +166,10 @@ func Trace(w http.ResponseWriter, r *http.Request) {
 		sec = 1
 	}
 
-	configureWriteDeadline(w, r, sec)
+	if durationExceedsWriteTimeout(r, sec) {
+		serveError(w, http.StatusBadRequest, "profile duration exceeds server's WriteTimeout")
+		return
+	}
 
 	// Set Content Type assuming trace.Start will work,
 	// because if it does it starts writing.
@@ -278,14 +273,15 @@ func (name handler) serveDeltaProfile(w http.ResponseWriter, r *http.Request, p 
 		serveError(w, http.StatusBadRequest, `invalid value for "seconds" - must be a positive integer`)
 		return
 	}
-	// 'name' should be a key in profileSupportsDelta.
 	if !profileSupportsDelta[name] {
 		serveError(w, http.StatusBadRequest, `"seconds" parameter is not supported for this profile type`)
 		return
 	}
-
-	configureWriteDeadline(w, r, float64(sec))
-
+	// 'name' should be a key in profileSupportsDelta.
+	if durationExceedsWriteTimeout(r, float64(sec)) {
+		serveError(w, http.StatusBadRequest, "profile duration exceeds server's WriteTimeout")
+		return
+	}
 	debug, _ := strconv.Atoi(r.FormValue("debug"))
 	if debug != 0 {
 		serveError(w, http.StatusBadRequest, "seconds and debug params are incompatible")

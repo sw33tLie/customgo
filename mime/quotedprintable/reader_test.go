@@ -12,7 +12,7 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
-	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -197,7 +197,7 @@ func TestExhaustive(t *testing.T) {
 	for k, v := range res {
 		outcomes = append(outcomes, fmt.Sprintf("%v: %d", k, v))
 	}
-	slices.Sort(outcomes)
+	sort.Strings(outcomes)
 	got := strings.Join(outcomes, "\n")
 	want := `OK: 28934
 invalid bytes after =: 3949

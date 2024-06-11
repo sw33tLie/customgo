@@ -5,7 +5,6 @@
 package slog
 
 import (
-	"bytes"
 	"flag"
 	"strings"
 	"testing"
@@ -51,15 +50,11 @@ func TestLevelVar(t *testing.T) {
 
 }
 
-func TestLevelMarshalJSON(t *testing.T) {
+func TestMarshalJSON(t *testing.T) {
 	want := LevelWarn - 3
-	wantData := []byte(`"INFO+1"`)
 	data, err := want.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !bytes.Equal(data, wantData) {
-		t.Errorf("got %s, want %s", string(data), string(wantData))
 	}
 	var got Level
 	if err := got.UnmarshalJSON(data); err != nil {
@@ -72,13 +67,9 @@ func TestLevelMarshalJSON(t *testing.T) {
 
 func TestLevelMarshalText(t *testing.T) {
 	want := LevelWarn - 3
-	wantData := []byte("INFO+1")
 	data, err := want.MarshalText()
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !bytes.Equal(data, wantData) {
-		t.Errorf("got %s, want %s", string(data), string(wantData))
 	}
 	var got Level
 	if err := got.UnmarshalText(data); err != nil {

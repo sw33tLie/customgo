@@ -25,24 +25,16 @@ func (d *dirInfo) close() {
 }
 
 func (f *File) readdir(n int, mode readdirMode) (names []string, dirents []DirEntry, infos []FileInfo, err error) {
-	// If this file has no dirinfo, create one.
-	var d *dirInfo
-	for {
-		d = f.dirinfo.Load()
-		if d != nil {
-			break
-		}
+	if f.dirinfo == nil {
 		dir, call, errno := f.pfd.OpenDir()
 		if errno != nil {
 			return nil, nil, nil, &PathError{Op: call, Path: f.name, Err: errno}
 		}
-		d = &dirInfo{dir: dir}
-		if f.dirinfo.CompareAndSwap(nil, d) {
-			break
+		f.dirinfo = &dirInfo{
+			dir: dir,
 		}
-		// We lost the race: try again.
-		d.close()
 	}
+	d := f.dirinfo
 
 	size := n
 	if size <= 0 {

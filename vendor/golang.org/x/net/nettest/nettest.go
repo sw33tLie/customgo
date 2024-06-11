@@ -8,6 +8,7 @@ package nettest
 import (
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -225,7 +226,7 @@ func LocalPath() (string, error) {
 	if runtime.GOOS == "darwin" {
 		dir = "/tmp"
 	}
-	f, err := os.CreateTemp(dir, "go-nettest")
+	f, err := ioutil.TempFile(dir, "go-nettest")
 	if err != nil {
 		return "", err
 	}

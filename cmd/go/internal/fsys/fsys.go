@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"internal/godebug"
-	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -404,6 +403,12 @@ func Open(path string) (*os.File, error) {
 	return openFile(path, os.O_RDONLY, 0)
 }
 
+// OpenFile opens the file at or overlaid on the given path with the flag and perm.
+func OpenFile(path string, flag int, perm os.FileMode) (*os.File, error) {
+	Trace("OpenFile", path)
+	return openFile(path, flag, perm)
+}
+
 func openFile(path string, flag int, perm os.FileMode) (*os.File, error) {
 	cpath := canonicalize(path)
 	if node, ok := overlay[cpath]; ok {
@@ -428,17 +433,6 @@ func openFile(path string, flag int, perm os.FileMode) (*os.File, error) {
 		}
 	}
 	return os.OpenFile(cpath, flag, perm)
-}
-
-// ReadFile reads the file at or overlaid on the given path.
-func ReadFile(path string) ([]byte, error) {
-	f, err := Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	return io.ReadAll(f)
 }
 
 // IsDirWithGoFiles reports whether dir is a directory containing Go files
@@ -696,7 +690,7 @@ func volumeNameLen(path string) int {
 	if path[1] == ':' && ('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z') {
 		return 2
 	}
-	// is it UNC? https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+	// is it UNC? https://msdn.microsoft.com/en-us/library/windows/desktop/aa365247(v=vs.85).aspx
 	if l := len(path); l >= 5 && isSlash(path[0]) && isSlash(path[1]) &&
 		!isSlash(path[2]) && path[2] != '.' {
 		// first, leading `\\` and next shouldn't be `\`. its server name.

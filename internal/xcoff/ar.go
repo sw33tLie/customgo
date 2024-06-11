@@ -54,7 +54,7 @@ type Archive struct {
 	closer io.Closer
 }
 
-// ArchiveHeader holds information about a big archive file header
+// MemberHeader holds information about a big archive file header
 type ArchiveHeader struct {
 	magic string
 }

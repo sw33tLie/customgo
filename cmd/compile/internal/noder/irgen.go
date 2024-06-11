@@ -6,13 +6,11 @@ package noder
 
 import (
 	"fmt"
-	"internal/buildcfg"
 	"internal/types/errors"
 	"regexp"
 	"sort"
 
 	"cmd/compile/internal/base"
-	"cmd/compile/internal/rangefunc"
 	"cmd/compile/internal/syntax"
 	"cmd/compile/internal/types2"
 	"cmd/internal/src"
@@ -22,26 +20,15 @@ var versionErrorRx = regexp.MustCompile(`requires go[0-9]+\.[0-9]+ or later`)
 
 // checkFiles configures and runs the types2 checker on the given
 // parsed source files and then returns the result.
-// The map result value indicates which closures are generated from the bodies of range function loops.
-func checkFiles(m posMap, noders []*noder) (*types2.Package, *types2.Info, map[*syntax.FuncLit]bool) {
+func checkFiles(m posMap, noders []*noder) (*types2.Package, *types2.Info) {
 	if base.SyntaxErrors() != 0 {
 		base.ErrorExit()
 	}
 
 	// setup and syntax error reporting
 	files := make([]*syntax.File, len(noders))
-	// fileBaseMap maps all file pos bases back to *syntax.File
-	// for checking Go version mismatched.
-	fileBaseMap := make(map[*syntax.PosBase]*syntax.File)
 	for i, p := range noders {
 		files[i] = p.file
-		// The file.Pos() is the position of the package clause.
-		// If there's a //line directive before that, file.Pos().Base()
-		// refers to that directive, not the file itself.
-		// Make sure to consistently map back to file base, here and
-		// when we look for a file in the conf.Error handler below,
-		// otherwise the file may not be found (was go.dev/issue/67141).
-		fileBaseMap[p.file.Pos().FileBase()] = p.file
 	}
 
 	// typechecking
@@ -54,9 +41,17 @@ func checkFiles(m posMap, noders []*noder) (*types2.Package, *types2.Info, map[*
 		Context:            ctxt,
 		GoVersion:          base.Flag.Lang,
 		IgnoreBranchErrors: true, // parser already checked via syntax.CheckBranches mode
-		Importer:           &importer,
-		Sizes:              types2.SizesFor("gc", buildcfg.GOARCH),
-		EnableAlias:        true,
+		Error: func(err error) {
+			terr := err.(types2.Error)
+			msg := terr.Msg
+			// if we have a version error, hint at the -lang setting
+			if versionErrorRx.MatchString(msg) {
+				msg = fmt.Sprintf("%s (-lang was set to %s; check go.mod)", msg, base.Flag.Lang)
+			}
+			base.ErrorfAt(m.makeXPos(terr.Pos), terr.Code, "%s", msg)
+		},
+		Importer: &importer,
+		Sizes:    &gcSizes{},
 	}
 	if base.Flag.ErrorURL {
 		conf.ErrorURL = " [go.dev/e/%s]"
@@ -69,54 +64,30 @@ func checkFiles(m posMap, noders []*noder) (*types2.Package, *types2.Info, map[*
 		Implicits:          make(map[syntax.Node]types2.Object),
 		Scopes:             make(map[syntax.Node]*types2.Scope),
 		Instances:          make(map[*syntax.Name]types2.Instance),
-		FileVersions:       make(map[*syntax.PosBase]string),
 		// expand as needed
-	}
-	conf.Error = func(err error) {
-		terr := err.(types2.Error)
-		msg := terr.Msg
-		if versionErrorRx.MatchString(msg) {
-			fileBase := terr.Pos.FileBase()
-			fileVersion := info.FileVersions[fileBase]
-			file := fileBaseMap[fileBase]
-			if file == nil {
-				// This should never happen, but be careful and don't crash.
-			} else if file.GoVersion == fileVersion {
-				// If we have a version error caused by //go:build, report it.
-				msg = fmt.Sprintf("%s (file declares //go:build %s)", msg, fileVersion)
-			} else {
-				// Otherwise, hint at the -lang setting.
-				msg = fmt.Sprintf("%s (-lang was set to %s; check go.mod)", msg, base.Flag.Lang)
-			}
-		}
-		base.ErrorfAt(m.makeXPos(terr.Pos), terr.Code, "%s", msg)
 	}
 
 	pkg, err := conf.Check(base.Ctxt.Pkgpath, files, info)
-	base.ExitIfErrors()
-	if err != nil {
-		base.FatalfAt(src.NoXPos, "conf.Check error: %v", err)
-	}
 
 	// Check for anonymous interface cycles (#56103).
-	// TODO(gri) move this code into the type checkers (types2 and go/types)
-	var f cycleFinder
-	for _, file := range files {
-		syntax.Inspect(file, func(n syntax.Node) bool {
-			if n, ok := n.(*syntax.InterfaceType); ok {
-				if f.hasCycle(types2.Unalias(n.GetTypeInfo().Type).(*types2.Interface)) {
-					base.ErrorfAt(m.makeXPos(n.Pos()), errors.InvalidTypeCycle, "invalid recursive type: anonymous interface refers to itself (see https://go.dev/issue/56103)")
+	if base.Debug.InterfaceCycles == 0 {
+		var f cycleFinder
+		for _, file := range files {
+			syntax.Inspect(file, func(n syntax.Node) bool {
+				if n, ok := n.(*syntax.InterfaceType); ok {
+					if f.hasCycle(n.GetTypeInfo().Type.(*types2.Interface)) {
+						base.ErrorfAt(m.makeXPos(n.Pos()), errors.InvalidTypeCycle, "invalid recursive type: anonymous interface refers to itself (see https://go.dev/issue/56103)")
 
-					for typ := range f.cyclic {
-						f.cyclic[typ] = false // suppress duplicate errors
+						for typ := range f.cyclic {
+							f.cyclic[typ] = false // suppress duplicate errors
+						}
 					}
+					return false
 				}
-				return false
-			}
-			return true
-		})
+				return true
+			})
+		}
 	}
-	base.ExitIfErrors()
 
 	// Implementation restriction: we don't allow not-in-heap types to
 	// be used as type arguments (#54765).
@@ -142,18 +113,13 @@ func checkFiles(m posMap, noders []*noder) (*types2.Package, *types2.Info, map[*
 			base.ErrorfAt(targ.pos, 0, "cannot use incomplete (or unallocatable) type as a type argument: %v", targ.typ)
 		}
 	}
+
 	base.ExitIfErrors()
+	if err != nil {
+		base.FatalfAt(src.NoXPos, "conf.Check error: %v", err)
+	}
 
-	// Rewrite range over function to explicit function calls
-	// with the loop bodies converted into new implicit closures.
-	// We do this now, before serialization to unified IR, so that if the
-	// implicit closures are inlined, we will have the unified IR form.
-	// If we do the rewrite in the back end, like between typecheck and walk,
-	// then the new implicit closure will not have a unified IR inline body,
-	// and bodyReaderFor will fail.
-	rangeInfo := rangefunc.Rewrite(pkg, info, files)
-
-	return pkg, info, rangeInfo
+	return pkg, info
 }
 
 // A cycleFinder detects anonymous interface cycles (go.dev/issue/56103).
@@ -178,7 +144,7 @@ func (f *cycleFinder) hasCycle(typ *types2.Interface) bool {
 // visit recursively walks typ0 to check any referenced interface types.
 func (f *cycleFinder) visit(typ0 types2.Type) bool {
 	for { // loop for tail recursion
-		switch typ := types2.Unalias(typ0).(type) {
+		switch typ := typ0.(type) {
 		default:
 			base.Fatalf("unexpected type: %T", typ)
 

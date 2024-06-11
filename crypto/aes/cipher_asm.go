@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build (amd64 || arm64 || ppc64 || ppc64le) && !purego
+//go:build amd64 || arm64 || ppc64 || ppc64le
 
 package aes
 
@@ -44,9 +44,8 @@ func newCipher(key []byte) (cipher.Block, error) {
 	if !supportsAES {
 		return newCipherGeneric(key)
 	}
-	// Note that under certain circumstances, we only return the inner aesCipherAsm.
-	// This avoids an unnecessary allocation of the aesCipher struct.
-	c := aesCipherGCM{aesCipherAsm{aesCipher{l: uint8(len(key) + 28)}}}
+	n := len(key) + 28
+	c := aesCipherAsm{aesCipher{make([]uint32, n), make([]uint32, n)}}
 	var rounds int
 	switch len(key) {
 	case 128 / 8:
@@ -61,9 +60,9 @@ func newCipher(key []byte) (cipher.Block, error) {
 
 	expandKeyAsm(rounds, &key[0], &c.enc[0], &c.dec[0])
 	if supportsAES && supportsGFMUL {
-		return &c, nil
+		return &aesCipherGCM{c}, nil
 	}
-	return &c.aesCipherAsm, nil
+	return &c, nil
 }
 
 func (c *aesCipherAsm) BlockSize() int { return BlockSize }
@@ -79,7 +78,7 @@ func (c *aesCipherAsm) Encrypt(dst, src []byte) {
 	if alias.InexactOverlap(dst[:BlockSize], src[:BlockSize]) {
 		panic("crypto/aes: invalid buffer overlap")
 	}
-	encryptBlockAsm(int(c.l)/4-1, &c.enc[0], &dst[0], &src[0])
+	encryptBlockAsm(len(c.enc)/4-1, &c.enc[0], &dst[0], &src[0])
 }
 
 func (c *aesCipherAsm) Decrypt(dst, src []byte) {
@@ -93,7 +92,7 @@ func (c *aesCipherAsm) Decrypt(dst, src []byte) {
 	if alias.InexactOverlap(dst[:BlockSize], src[:BlockSize]) {
 		panic("crypto/aes: invalid buffer overlap")
 	}
-	decryptBlockAsm(int(c.l)/4-1, &c.dec[0], &dst[0], &src[0])
+	decryptBlockAsm(len(c.dec)/4-1, &c.dec[0], &dst[0], &src[0])
 }
 
 // expandKey is used by BenchmarkExpand to ensure that the asm implementation

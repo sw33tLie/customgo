@@ -115,19 +115,23 @@ func removeLeadingDuplicates(env []string) (ret []string) {
 }
 
 func (h *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	root := h.Root
+	if root == "" {
+		root = "/"
+	}
+
 	if len(req.TransferEncoding) > 0 && req.TransferEncoding[0] == "chunked" {
 		rw.WriteHeader(http.StatusBadRequest)
 		rw.Write([]byte("Chunked request bodies are not supported by CGI."))
 		return
 	}
 
-	root := strings.TrimRight(h.Root, "/")
-	pathInfo := strings.TrimPrefix(req.URL.Path, root)
+	pathInfo := req.URL.Path
+	if root != "/" && strings.HasPrefix(pathInfo, root) {
+		pathInfo = pathInfo[len(root):]
+	}
 
 	port := "80"
-	if req.TLS != nil {
-		port = "443"
-	}
 	if matches := trailingPort.FindStringSubmatch(req.Host); len(matches) != 0 {
 		port = matches[1]
 	}
@@ -277,7 +281,7 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		headerLines++
 		header, val, ok := strings.Cut(string(line), ":")
 		if !ok {
-			h.printf("cgi: bogus header line: %s", line)
+			h.printf("cgi: bogus header line: %s", string(line))
 			continue
 		}
 		if !httpguts.ValidHeaderFieldName(header) {

@@ -4,10 +4,7 @@
 
 package testlog
 
-import (
-	"sync"
-	_ "unsafe" // for linkname
-)
+import "sync"
 
 // PanicOnExit0 reports whether to panic on a call to os.Exit(0).
 // This is in the testlog package because, like other definitions in
@@ -29,15 +26,6 @@ var panicOnExit0 struct {
 }
 
 // SetPanicOnExit0 sets panicOnExit0 to v.
-//
-// SetPanicOnExit0 should be an internal detail,
-// but alternate implementations of go test in other
-// build systems may need to access it using linkname.
-//
-// Do not remove or change the type signature.
-// See go.dev/issue/67401.
-//
-//go:linkname SetPanicOnExit0
 func SetPanicOnExit0(v bool) {
 	panicOnExit0.mu.Lock()
 	defer panicOnExit0.mu.Unlock()

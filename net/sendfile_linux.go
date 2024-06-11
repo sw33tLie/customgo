@@ -10,8 +10,6 @@ import (
 	"os"
 )
 
-const supportsSendfile = true
-
 // sendFile copies the contents of r to c using the sendfile
 // system call to minimize copies.
 //

@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !js && !wasip1
+
 package net
 
 import (
@@ -10,11 +12,10 @@ import (
 	"net/internal/socktest"
 	"os"
 	"runtime"
-	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 var (
@@ -58,20 +59,6 @@ func TestMain(m *testing.M) {
 	}
 	forceCloseSockets()
 	os.Exit(st)
-}
-
-// mustSetDeadline calls the bound method m to set a deadline on a Conn.
-// If the call fails, mustSetDeadline skips t if the current GOOS is believed
-// not to support deadlines, or fails the test otherwise.
-func mustSetDeadline(t testing.TB, m func(time.Time) error, d time.Duration) {
-	err := m(time.Now().Add(d))
-	if err != nil {
-		t.Helper()
-		if runtime.GOOS == "plan9" {
-			t.Skipf("skipping: %s does not support deadlines", runtime.GOOS)
-		}
-		t.Fatal(err)
-	}
 }
 
 type ipv6LinkLocalUnicastTest struct {
@@ -193,7 +180,7 @@ func runningGoroutines() []string {
 		}
 		gss = append(gss, stack)
 	}
-	slices.Sort(gss)
+	sort.Strings(gss)
 	return gss
 }
 

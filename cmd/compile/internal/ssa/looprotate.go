@@ -56,20 +56,9 @@ func loopRotate(f *Func) {
 			}
 			p = e.b
 		}
-		if p == nil {
+		if p == nil || p == b {
 			continue
 		}
-		p.Hotness |= HotInitial
-		if f.IsPgoHot {
-			p.Hotness |= HotPgo
-		}
-		// blocks will be arranged so that p is ordered first, if it isn't already.
-		if p == b { // p is header, already first (and also, only block in the loop)
-			continue
-		}
-		p.Hotness |= HotNotFlowIn
-
-		// the loop header b follows p
 		after[p.ID] = []*Block{b}
 		for {
 			nextIdx := idToIdx[b.ID] + 1

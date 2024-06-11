@@ -6,12 +6,11 @@ package fs
 
 import (
 	"errors"
-	"internal/bytealg"
-	"slices"
+	"sort"
 )
 
 // ReadDirFS is the interface implemented by a file system
-// that provides an optimized implementation of [ReadDir].
+// that provides an optimized implementation of ReadDir.
 type ReadDirFS interface {
 	FS
 
@@ -23,7 +22,7 @@ type ReadDirFS interface {
 // ReadDir reads the named directory
 // and returns a list of directory entries sorted by filename.
 //
-// If fs implements [ReadDirFS], ReadDir calls fs.ReadDir.
+// If fs implements ReadDirFS, ReadDir calls fs.ReadDir.
 // Otherwise ReadDir calls fs.Open and uses ReadDir and Close
 // on the returned file.
 func ReadDir(fsys FS, name string) ([]DirEntry, error) {
@@ -43,9 +42,7 @@ func ReadDir(fsys FS, name string) ([]DirEntry, error) {
 	}
 
 	list, err := dir.ReadDir(-1)
-	slices.SortFunc(list, func(a, b DirEntry) int {
-		return bytealg.CompareString(a.Name(), b.Name())
-	})
+	sort.Slice(list, func(i, j int) bool { return list[i].Name() < list[j].Name() })
 	return list, err
 }
 
@@ -74,7 +71,7 @@ func (di dirInfo) String() string {
 	return FormatDirEntry(di)
 }
 
-// FileInfoToDirEntry returns a [DirEntry] that returns information from info.
+// FileInfoToDirEntry returns a DirEntry that returns information from info.
 // If info is nil, FileInfoToDirEntry returns nil.
 func FileInfoToDirEntry(info FileInfo) DirEntry {
 	if info == nil {

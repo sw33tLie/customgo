@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
 
 	"cmd/go/internal/base"
 	"cmd/go/internal/cache"
@@ -19,7 +18,6 @@ import (
 	"cmd/go/internal/str"
 	"cmd/internal/buildid"
 	"cmd/internal/quoted"
-	"cmd/internal/telemetry"
 )
 
 // Build IDs
@@ -240,28 +238,8 @@ func (b *Builder) gccToolID(name, language string) (id, exe string, err error) {
 	version := ""
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
-		fields := strings.Fields(line)
-		for i, field := range fields {
-			if strings.HasSuffix(field, ":") {
-				// Avoid parsing fields of lines like "Configured with: …", which may
-				// contain arbitrary substrings.
-				break
-			}
-			if field == "version" && i < len(fields)-1 {
-				// Check that the next field is plausibly a version number.
-				// We require only that it begins with an ASCII digit,
-				// since we don't know what version numbering schemes a given
-				// C compiler may use. (Clang and GCC mostly seem to follow the scheme X.Y.Z,
-				// but in https://go.dev/issue/64619 we saw "8.3 [DragonFly]", and who knows
-				// what other C compilers like "zig cc" might report?)
-				next := fields[i+1]
-				if len(next) > 0 && next[0] >= '0' && next[0] <= '9' {
-					version = line
-					break
-				}
-			}
-		}
-		if version != "" {
+		if fields := strings.Fields(line); len(fields) > 1 && fields[1] == "version" || len(fields) > 2 && fields[2] == "version" {
+			version = line
 			break
 		}
 	}
@@ -292,7 +270,7 @@ func (b *Builder) gccToolID(name, language string) (id, exe string, err error) {
 		}
 		exe = fields[0]
 		if !strings.ContainsAny(exe, `/\`) {
-			if lp, err := cfg.LookPath(exe); err == nil {
+			if lp, err := exec.LookPath(exe); err == nil {
 				exe = lp
 			}
 		}
@@ -365,7 +343,16 @@ func (b *Builder) gccgoBuildIDFile(a *Action) (string, error) {
 		fmt.Fprintf(&buf, "\t"+`.section .note.GNU-split-stack,"",%s`+"\n", secType)
 	}
 
-	if err := b.Shell(a).writeFile(sfile, buf.Bytes()); err != nil {
+	if cfg.BuildN || cfg.BuildX {
+		for _, line := range bytes.Split(buf.Bytes(), []byte("\n")) {
+			b.Showcmd("", "echo '%s' >> %s", line, sfile)
+		}
+		if cfg.BuildN {
+			return sfile, nil
+		}
+	}
+
+	if err := os.WriteFile(sfile, buf.Bytes(), 0666); err != nil {
 		return "", err
 	}
 
@@ -405,14 +392,6 @@ func (b *Builder) fileHash(file string) string {
 	return buildid.HashToString(sum)
 }
 
-var (
-	counterCacheHit  = telemetry.NewCounter("go/buildcache/hit")
-	counterCacheMiss = telemetry.NewCounter("go/buildcache/miss")
-
-	onceIncStdlibRecompiled sync.Once
-	stdlibRecompiled        = telemetry.NewCounter("go/buildcache/stdlib-recompiled")
-)
-
 // useCache tries to satisfy the action a, which has action ID actionHash,
 // by using a cached result from an earlier build. At the moment, the only
 // cached result is the installed package or binary at target.
@@ -426,7 +405,7 @@ var (
 // during a's work. The caller should defer b.flushOutput(a), to make sure
 // that flushOutput is eventually called regardless of whether the action
 // succeeds. The flushOutput call must happen after updateBuildID.
-func (b *Builder) useCache(a *Action, actionHash cache.ActionID, target string, printOutput bool) (ok bool) {
+func (b *Builder) useCache(a *Action, actionHash cache.ActionID, target string, printOutput bool) bool {
 	// The second half of the build ID here is a placeholder for the content hash.
 	// It's important that the overall buildID be unlikely verging on impossible
 	// to appear in the output by chance, but that should be taken care of by
@@ -457,20 +436,6 @@ func (b *Builder) useCache(a *Action, actionHash cache.ActionID, target string, 
 		a.output = []byte{}
 		return false
 	}
-
-	defer func() {
-		// Increment counters for cache hits and misses based on the return value
-		// of this function. Don't increment counters if we return early because of
-		// cfg.BuildA above because we don't even look at the cache in that case.
-		if ok {
-			counterCacheHit.Inc()
-		} else {
-			if a.Package != nil && a.Package.Standard {
-				onceIncStdlibRecompiled.Do(stdlibRecompiled.Inc)
-			}
-			counterCacheMiss.Inc()
-		}
-	}()
 
 	c := cache.Default()
 
@@ -511,8 +476,8 @@ func (b *Builder) useCache(a *Action, actionHash cache.ActionID, target string, 
 					// If it doesn't work, it doesn't work: reusing the cached binary is more
 					// important than reprinting diagnostic information.
 					if printOutput {
-						showStdout(b, c, a, "stdout")      // compile output
-						showStdout(b, c, a, "link-stdout") // link output
+						showStdout(b, c, a.actionID, "stdout")      // compile output
+						showStdout(b, c, a.actionID, "link-stdout") // link output
 					}
 
 					// Poison a.Target to catch uses later in the build.
@@ -539,8 +504,8 @@ func (b *Builder) useCache(a *Action, actionHash cache.ActionID, target string, 
 		// If it doesn't work, it doesn't work: reusing the test result is more
 		// important than reprinting diagnostic information.
 		if printOutput {
-			showStdout(b, c, a.Deps[0], "stdout")      // compile output
-			showStdout(b, c, a.Deps[0], "link-stdout") // link output
+			showStdout(b, c, a.Deps[0].actionID, "stdout")      // compile output
+			showStdout(b, c, a.Deps[0].actionID, "link-stdout") // link output
 		}
 
 		// Poison a.Target to catch uses later in the build.
@@ -551,17 +516,9 @@ func (b *Builder) useCache(a *Action, actionHash cache.ActionID, target string, 
 
 	// Check to see if the action output is cached.
 	if file, _, err := cache.GetFile(c, actionHash); err == nil {
-		if a.Mode == "preprocess PGO profile" {
-			// Preprocessed PGO profiles don't embed a build ID, so
-			// skip the build ID lookup.
-			// TODO(prattmic): better would be to add a build ID to the format.
-			a.built = file
-			a.Target = "DO NOT USE - using cache"
-			return true
-		}
 		if buildID, err := buildid.ReadFile(file); err == nil {
 			if printOutput {
-				showStdout(b, c, a, "stdout")
+				showStdout(b, c, a.actionID, "stdout")
 			}
 			a.built = file
 			a.Target = "DO NOT USE - using cache"
@@ -603,21 +560,20 @@ func (b *Builder) useCache(a *Action, actionHash cache.ActionID, target string, 
 	return false
 }
 
-func showStdout(b *Builder, c cache.Cache, a *Action, key string) error {
-	actionID := a.actionID
-
+func showStdout(b *Builder, c cache.Cache, actionID cache.ActionID, key string) error {
 	stdout, stdoutEntry, err := cache.GetBytes(c, cache.Subkey(actionID, key))
 	if err != nil {
 		return err
 	}
 
 	if len(stdout) > 0 {
-		sh := b.Shell(a)
 		if cfg.BuildX || cfg.BuildN {
-			sh.ShowCmd("", "%s  # internal", joinUnambiguously(str.StringList("cat", c.OutputFile(stdoutEntry.OutputID))))
+			b.Showcmd("", "%s  # internal", joinUnambiguously(str.StringList("cat", c.OutputFile(stdoutEntry.OutputID))))
 		}
 		if !cfg.BuildN {
-			sh.Print(string(stdout))
+			b.output.Lock()
+			defer b.output.Unlock()
+			b.Print(string(stdout))
 		}
 	}
 	return nil
@@ -625,7 +581,9 @@ func showStdout(b *Builder, c cache.Cache, a *Action, key string) error {
 
 // flushOutput flushes the output being queued in a.
 func (b *Builder) flushOutput(a *Action) {
-	b.Shell(a).Print(string(a.output))
+	b.output.Lock()
+	defer b.output.Unlock()
+	b.Print(string(a.output))
 	a.output = nil
 }
 
@@ -638,11 +596,9 @@ func (b *Builder) flushOutput(a *Action) {
 //
 // Keep in sync with src/cmd/buildid/buildid.go
 func (b *Builder) updateBuildID(a *Action, target string, rewrite bool) error {
-	sh := b.Shell(a)
-
 	if cfg.BuildX || cfg.BuildN {
 		if rewrite {
-			sh.ShowCmd("", "%s # internal", joinUnambiguously(str.StringList(base.Tool("buildid"), "-w", target)))
+			b.Showcmd("", "%s # internal", joinUnambiguously(str.StringList(base.Tool("buildid"), "-w", target)))
 		}
 		if cfg.BuildN {
 			return nil
@@ -731,7 +687,7 @@ func (b *Builder) updateBuildID(a *Action, target string, rewrite bool) error {
 			outputID, _, err := c.Put(a.actionID, r)
 			r.Close()
 			if err == nil && cfg.BuildX {
-				sh.ShowCmd("", "%s # internal", joinUnambiguously(str.StringList("cp", target, c.OutputFile(outputID))))
+				b.Showcmd("", "%s # internal", joinUnambiguously(str.StringList("cp", target, c.OutputFile(outputID))))
 			}
 			if b.NeedExport {
 				if err != nil {

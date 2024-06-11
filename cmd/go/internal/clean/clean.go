@@ -150,10 +150,11 @@ func runClean(ctx context.Context, cmd *base.Command, args []string) {
 		}
 	}
 
-	sh := work.NewShell("", fmt.Print)
+	var b work.Builder
+	b.Print = fmt.Print
 
 	if cleanCache {
-		dir, _ := cache.DefaultDir()
+		dir := cache.DefaultDir()
 		if dir != "off" {
 			// Remove the cache subdirectories but not the top cache directory.
 			// The top cache directory may have been created with special permissions
@@ -162,16 +163,30 @@ func runClean(ctx context.Context, cmd *base.Command, args []string) {
 			subdirs, _ := filepath.Glob(filepath.Join(str.QuoteGlob(dir), "[0-9a-f][0-9a-f]"))
 			printedErrors := false
 			if len(subdirs) > 0 {
-				if err := sh.RemoveAll(subdirs...); err != nil && !printedErrors {
-					printedErrors = true
-					base.Error(err)
+				if cfg.BuildN || cfg.BuildX {
+					b.Showcmd("", "rm -r %s", strings.Join(subdirs, " "))
+				}
+				if !cfg.BuildN {
+					for _, d := range subdirs {
+						// Only print the first error - there may be many.
+						// This also mimics what os.RemoveAll(dir) would do.
+						if err := os.RemoveAll(d); err != nil && !printedErrors {
+							printedErrors = true
+							base.Error(err)
+						}
+					}
 				}
 			}
 
 			logFile := filepath.Join(dir, "log.txt")
-			if err := sh.RemoveAll(logFile); err != nil && !printedErrors {
-				printedErrors = true
-				base.Error(err)
+			if cfg.BuildN || cfg.BuildX {
+				b.Showcmd("", "rm -f %s", logFile)
+			}
+			if !cfg.BuildN {
+				if err := os.RemoveAll(logFile); err != nil && !printedErrors {
+					printedErrors = true
+					base.Error(err)
+				}
 			}
 		}
 	}
@@ -180,7 +195,7 @@ func runClean(ctx context.Context, cmd *base.Command, args []string) {
 		// Instead of walking through the entire cache looking for test results,
 		// we write a file to the cache indicating that all test results from before
 		// right now are to be ignored.
-		dir, _ := cache.DefaultDir()
+		dir := cache.DefaultDir()
 		if dir != "off" {
 			f, err := lockedfile.Edit(filepath.Join(dir, "testexpire.txt"))
 			if err == nil {
@@ -211,7 +226,7 @@ func runClean(ctx context.Context, cmd *base.Command, args []string) {
 			base.Fatalf("go: cannot clean -modcache without a module cache")
 		}
 		if cfg.BuildN || cfg.BuildX {
-			sh.ShowCmd("", "rm -rf %s", cfg.GOMODCACHE)
+			b.Showcmd("", "rm -rf %s", cfg.GOMODCACHE)
 		}
 		if !cfg.BuildN {
 			if err := modfetch.RemoveAll(cfg.GOMODCACHE); err != nil {
@@ -222,8 +237,13 @@ func runClean(ctx context.Context, cmd *base.Command, args []string) {
 
 	if cleanFuzzcache {
 		fuzzDir := cache.Default().FuzzDir()
-		if err := sh.RemoveAll(fuzzDir); err != nil {
-			base.Error(err)
+		if cfg.BuildN || cfg.BuildX {
+			b.Showcmd("", "rm -rf %s", fuzzDir)
+		}
+		if !cfg.BuildN {
+			if err := os.RemoveAll(fuzzDir); err != nil {
+				base.Error(err)
+			}
 		}
 	}
 }
@@ -269,7 +289,8 @@ func clean(p *load.Package) {
 		return
 	}
 
-	sh := work.NewShell("", fmt.Print)
+	var b work.Builder
+	b.Print = fmt.Print
 
 	packageFile := map[string]bool{}
 	if p.Name != "main" {
@@ -332,7 +353,7 @@ func clean(p *load.Package) {
 	}
 
 	if cfg.BuildN || cfg.BuildX {
-		sh.ShowCmd(p.Dir, "rm -f %s", strings.Join(allRemove, " "))
+		b.Showcmd(p.Dir, "rm -f %s", strings.Join(allRemove, " "))
 	}
 
 	toRemove := map[string]bool{}
@@ -344,7 +365,13 @@ func clean(p *load.Package) {
 		if dir.IsDir() {
 			// TODO: Remove once Makefiles are forgotten.
 			if cleanDir[name] {
-				if err := sh.RemoveAll(filepath.Join(p.Dir, name)); err != nil {
+				if cfg.BuildN || cfg.BuildX {
+					b.Showcmd(p.Dir, "rm -r %s", name)
+					if cfg.BuildN {
+						continue
+					}
+				}
+				if err := os.RemoveAll(filepath.Join(p.Dir, name)); err != nil {
 					base.Error(err)
 				}
 			}
@@ -362,7 +389,7 @@ func clean(p *load.Package) {
 
 	if cleanI && p.Target != "" {
 		if cfg.BuildN || cfg.BuildX {
-			sh.ShowCmd("", "rm -f %s", p.Target)
+			b.Showcmd("", "rm -f %s", p.Target)
 		}
 		if !cfg.BuildN {
 			removeFile(p.Target)

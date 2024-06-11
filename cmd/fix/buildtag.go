@@ -6,7 +6,6 @@ package main
 
 import (
 	"go/ast"
-	"go/version"
 	"strings"
 )
 
@@ -14,7 +13,7 @@ func init() {
 	register(buildtagFix)
 }
 
-const buildtagGoVersionCutoff = "go1.18"
+const buildtagGoVersionCutoff = 1_18
 
 var buildtagFix = fix{
 	name: "buildtag",
@@ -24,7 +23,7 @@ var buildtagFix = fix{
 }
 
 func buildtag(f *ast.File) bool {
-	if version.Compare(*goVersion, buildtagGoVersionCutoff) < 0 {
+	if goVersion < buildtagGoVersionCutoff {
 		return false
 	}
 

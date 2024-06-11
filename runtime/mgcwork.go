@@ -6,7 +6,7 @@ package runtime
 
 import (
 	"internal/goarch"
-	"internal/runtime/atomic"
+	"runtime/internal/atomic"
 	"runtime/internal/sys"
 	"unsafe"
 )

@@ -428,7 +428,7 @@ func testZeroSignature(t *testing.T, curve elliptic.Curve) {
 	}
 }
 
-func TestNegativeSignature(t *testing.T) {
+func TestNegtativeSignature(t *testing.T) {
 	testAllCurves(t, testNegativeSignature)
 }
 

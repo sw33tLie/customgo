@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"slices"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -86,14 +86,6 @@ func SetPendingDialHooks(before, after func()) {
 
 func SetTestHookServerServe(fn func(*Server, net.Listener)) { testHookServerServe = fn }
 
-func SetTestHookProxyConnectTimeout(t *testing.T, f func(context.Context, time.Duration) (context.Context, context.CancelFunc)) {
-	orig := testHookProxyConnectTimeout
-	t.Cleanup(func() {
-		testHookProxyConnectTimeout = orig
-	})
-	testHookProxyConnectTimeout = f
-}
-
 func NewTestTimeoutHandler(handler Handler, ctx context.Context) Handler {
 	return &timeoutHandler{
 		handler:     handler,
@@ -119,7 +111,7 @@ func (t *Transport) IdleConnKeysForTesting() (keys []string) {
 	for key := range t.idleConn {
 		keys = append(keys, key.String())
 	}
-	slices.Sort(keys)
+	sort.Strings(keys)
 	return
 }
 
@@ -138,7 +130,7 @@ func (t *Transport) IdleConnStrsForTesting() []string {
 			ret = append(ret, pc.conn.LocalAddr().String()+"/"+pc.conn.RemoteAddr().String())
 		}
 	}
-	slices.Sort(ret)
+	sort.Strings(ret)
 	return ret
 }
 
@@ -158,7 +150,7 @@ func (t *Transport) IdleConnStrsForTesting_h2() []string {
 		}
 	}
 
-	slices.Sort(ret)
+	sort.Strings(ret)
 	return ret
 }
 
@@ -322,22 +314,4 @@ func ResponseWriterConnForTesting(w ResponseWriter) (c net.Conn, ok bool) {
 		return r.conn.rwc, true
 	}
 	return nil, false
-}
-
-func init() {
-	// Set the default rstAvoidanceDelay to the minimum possible value to shake
-	// out tests that unexpectedly depend on it. Such tests should use
-	// runTimeSensitiveTest and SetRSTAvoidanceDelay to explicitly raise the delay
-	// if needed.
-	rstAvoidanceDelay = 1 * time.Nanosecond
-}
-
-// SetRSTAvoidanceDelay sets how long we are willing to wait between calling
-// CloseWrite on a connection and fully closing the connection.
-func SetRSTAvoidanceDelay(t *testing.T, d time.Duration) {
-	prevDelay := rstAvoidanceDelay
-	t.Cleanup(func() {
-		rstAvoidanceDelay = prevDelay
-	})
-	rstAvoidanceDelay = d
 }

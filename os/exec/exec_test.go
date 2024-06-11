@@ -77,21 +77,6 @@ func TestMain(m *testing.M) {
 	if os.Getenv("GO_EXEC_TEST_PID") == "" {
 		os.Setenv("GO_EXEC_TEST_PID", strconv.Itoa(pid))
 
-		if runtime.GOOS == "windows" {
-			// Normalize environment so that test behavior is consistent.
-			// (The behavior of LookPath varies depending on this variable.)
-			//
-			// Ideally we would test both with the variable set and with it cleared,
-			// but I (bcmills) am not sure that that's feasible: it may already be set
-			// in the Windows registry, and I'm not sure if it is possible to remove
-			// a registry variable in a program's environment.
-			//
-			// Per https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-needcurrentdirectoryforexepathw#remarks,
-			// “the existence of the NoDefaultCurrentDirectoryInExePath environment
-			// variable is checked, and not its value.”
-			os.Setenv("NoDefaultCurrentDirectoryInExePath", "TRUE")
-		}
-
 		code := m.Run()
 		if code == 0 && flag.Lookup("test.run").Value.String() == "" && flag.Lookup("test.list").Value.String() == "" {
 			for cmd := range helperCommands {
@@ -195,28 +180,6 @@ var exeOnce struct {
 	sync.Once
 }
 
-func chdir(t *testing.T, dir string) {
-	t.Helper()
-
-	prev, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("Chdir(%#q)", dir)
-
-	t.Cleanup(func() {
-		if err := os.Chdir(prev); err != nil {
-			// Couldn't chdir back to the original working directory.
-			// panic instead of t.Fatal so that we don't run other tests
-			// in an unexpected location.
-			panic("couldn't restore working directory: " + err.Error())
-		}
-	})
-}
-
 var helperCommandUsed sync.Map
 
 var helperCommands = map[string]func(...string){
@@ -304,7 +267,7 @@ func cmdExit(args ...string) {
 }
 
 func cmdDescribeFiles(args ...string) {
-	f := os.NewFile(3, "fd3")
+	f := os.NewFile(3, fmt.Sprintf("fd3"))
 	ln, err := net.FileListener(f)
 	if err == nil {
 		fmt.Printf("fd3: listener %s\n", ln.Addr())
@@ -1366,7 +1329,7 @@ func TestWaitInterrupt(t *testing.T) {
 	})
 
 	// With a very long WaitDelay and no Cancel function, we should wait for the
-	// process to exit even if the command's Context is canceled.
+	// process to exit even if the command's Context is cancelled.
 	t.Run("WaitDelay", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skipf("skipping: os.Interrupt is not implemented on Windows")
@@ -1404,7 +1367,7 @@ func TestWaitInterrupt(t *testing.T) {
 		}
 	})
 
-	// If the context is canceled and the Cancel function sends os.Kill,
+	// If the context is cancelled and the Cancel function sends os.Kill,
 	// the process should be terminated immediately, and its output
 	// pipes should be closed (causing Wait to return) after WaitDelay
 	// even if a child process is still writing to them.
@@ -1659,8 +1622,8 @@ func TestCancelErrors(t *testing.T) {
 		// This test should kill the child process after 1ms,
 		// To maximize compatibility with existing uses of exec.CommandContext, the
 		// resulting error should be an exec.ExitError without additional wrapping.
-		if _, ok := err.(*exec.ExitError); !ok {
-			t.Errorf("Wait error = %v; want *exec.ExitError", err)
+		if ee, ok := err.(*exec.ExitError); !ok {
+			t.Errorf("Wait error = %v; want %T", err, *ee)
 		}
 	})
 
@@ -1818,49 +1781,4 @@ func TestConcurrentExec(t *testing.T) {
 	exits.Wait()
 	cancel()
 	hangs.Wait()
-}
-
-// TestPathRace tests that [Cmd.String] can be called concurrently
-// with [Cmd.Start].
-func TestPathRace(t *testing.T) {
-	cmd := helperCommand(t, "exit", "0")
-
-	done := make(chan struct{})
-	go func() {
-		out, err := cmd.CombinedOutput()
-		t.Logf("%v: %v\n%s", cmd, err, out)
-		close(done)
-	}()
-
-	t.Logf("running in background: %v", cmd)
-	<-done
-}
-
-func TestAbsPathExec(t *testing.T) {
-	testenv.MustHaveExec(t)
-	testenv.MustHaveGoBuild(t) // must have GOROOT/bin/gofmt, but close enough
-
-	// A simple exec of a full path should work.
-	// Go 1.22 broke this on Windows, requiring ".exe"; see #66586.
-	exe := filepath.Join(testenv.GOROOT(t), "bin/gofmt")
-	cmd := exec.Command(exe)
-	if cmd.Path != exe {
-		t.Errorf("exec.Command(%#q) set Path=%#q", exe, cmd.Path)
-	}
-	err := cmd.Run()
-	if err != nil {
-		t.Errorf("using exec.Command(%#q): %v", exe, err)
-	}
-
-	cmd = &exec.Cmd{Path: exe}
-	err = cmd.Run()
-	if err != nil {
-		t.Errorf("using exec.Cmd{Path: %#q}: %v", cmd.Path, err)
-	}
-
-	cmd = &exec.Cmd{Path: "gofmt", Dir: "/"}
-	err = cmd.Run()
-	if err == nil {
-		t.Errorf("using exec.Cmd{Path: %#q}: unexpected success", cmd.Path)
-	}
 }

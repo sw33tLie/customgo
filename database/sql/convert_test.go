@@ -354,10 +354,9 @@ func TestRawBytesAllocs(t *testing.T) {
 		{"time", time.Unix(2, 5).UTC(), "1970-01-01T00:00:02.000000005Z"},
 	}
 
-	var buf RawBytes
-	rows := &Rows{}
+	buf := make(RawBytes, 10)
 	test := func(name string, in any, want string) {
-		if err := convertAssignRows(&buf, in, rows); err != nil {
+		if err := convertAssign(&buf, in); err != nil {
 			t.Fatalf("%s: convertAssign = %v", name, err)
 		}
 		match := len(buf) == len(want)
@@ -376,7 +375,6 @@ func TestRawBytesAllocs(t *testing.T) {
 
 	n := testing.AllocsPerRun(100, func() {
 		for _, tt := range tests {
-			rows.raw = rows.raw[:0]
 			test(tt.name, tt.in, tt.want)
 		}
 	})
@@ -385,11 +383,7 @@ func TestRawBytesAllocs(t *testing.T) {
 	// and gc. With 32-bit words there are more convT2E allocs, and
 	// with gccgo, only pointers currently go in interface data.
 	// So only care on amd64 gc for now.
-	measureAllocs := false
-	switch runtime.GOARCH {
-	case "amd64", "arm64":
-		measureAllocs = runtime.Compiler == "gc"
-	}
+	measureAllocs := runtime.GOARCH == "amd64" && runtime.Compiler == "gc"
 
 	if n > 0.5 && measureAllocs {
 		t.Fatalf("allocs = %v; want 0", n)

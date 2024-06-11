@@ -83,7 +83,6 @@ func testGetAfterClose(t *testing.T, newServer newServerFunc) {
 		t.Fatal(err)
 	}
 	got, err := io.ReadAll(res.Body)
-	res.Body.Close()
 	if err != nil {
 		t.Fatal(err)
 	}

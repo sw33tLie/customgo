@@ -52,38 +52,28 @@ NONE <
   assistQueue,
   sweep;
 
-# Test only
-NONE < testR, testW;
-
-NONE < timerSend;
-
 # Scheduler, timers, netpoll
-NONE < allocmW, execW, cpuprof, pollCache, pollDesc, wakeableSleep;
-scavenge, sweep, testR, wakeableSleep, timerSend < hchan;
+NONE < pollDesc, cpuprof;
 assistQueue,
   cpuprof,
   forcegc,
-  hchan,
   pollDesc, # pollDesc can interact with timers, which can lock sched.
   scavenge,
   sweep,
-  sweepWaiters,
-  testR,
-  wakeableSleep
-# Above SCHED are things that can call into the scheduler.
-< SCHED
-# Below SCHED is the scheduler implementation.
-< allocmR,
-  execR;
-allocmR, execR, hchan < sched;
+  sweepWaiters
+< sched;
 sched < allg, allp;
+allp < timers;
+timers < netpollInit;
 
 # Channels
+scavenge, sweep < hchan;
 NONE < notifyList;
 hchan, notifyList < sudog;
 
-hchan, pollDesc, wakeableSleep < timers;
-timers, timerSend < timer < netpollInit;
+# RWMutex
+NONE < rwmutexW;
+rwmutexW, sysmon < rwmutexR;
 
 # Semaphores
 NONE < root;
@@ -109,14 +99,10 @@ traceBuf < traceStrings;
 
 # Malloc
 allg,
-  allocmR,
-  allp, # procresize
-  execR, # May grow stack
-  execW, # May allocate after BeforeFork
   hchan,
   notifyList,
   reflectOffs,
-  timer,
+  timers,
   traceStrings,
   userArenaState
 # Above MALLOC are things that can allocate memory.
@@ -125,7 +111,6 @@ allg,
 < fin,
   spanSetSpine,
   mspanSpecial,
-  traceTypeTab,
   MPROF;
 
 # We can acquire gcBitsArenas for pinner bits, and
@@ -150,7 +135,7 @@ gcBitsArenas,
 < STACKGROW
 # Below STACKGROW is the stack allocator/copying implementation.
 < gscan;
-gscan < stackpool;
+gscan, rwmutexR < stackpool;
 gscan < stackLarge;
 # Generally, hchan must be acquired before gscan. But in one case,
 # where we suspend a G and then shrink its stack, syncadjustsudogs
@@ -162,9 +147,7 @@ gscan < hchanLeaf;
 defer,
   gscan,
   mspanSpecial,
-  pollCache,
-  sudog,
-  timer
+  sudog
 # Anything that can have write barriers can acquire WB.
 # Above WB, we can have write barriers.
 < WB
@@ -205,20 +188,6 @@ NONE < panic;
 panic < deadlock;
 # raceFini is only held while exiting.
 panic < raceFini;
-
-# RWMutex internal read lock
-
-allocmR,
-  allocmW
-< allocmRInternal;
-
-execR,
-  execW
-< execRInternal;
-
-testR,
-  testW
-< testRInternal;
 `
 
 // cyclicRanks lists lock ranks that allow multiple locks of the same

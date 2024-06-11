@@ -249,7 +249,9 @@ func (p *parser) calcSize(re *Regexp, force bool) int64 {
 		size = int64(re.Max)*sub + int64(re.Max-re.Min)
 	}
 
-	size = max(1, size)
+	if size < 1 {
+		size = 1
+	}
 	p.size[re] = size
 	return size
 }
@@ -380,12 +382,14 @@ func minFoldRune(r rune) rune {
 	if r < minFold || r > maxFold {
 		return r
 	}
-	m := r
+	min := r
 	r0 := r
 	for r = unicode.SimpleFold(r); r != r0; r = unicode.SimpleFold(r) {
-		m = min(m, r)
+		if min > r {
+			min = r
+		}
 	}
-	return m
+	return min
 }
 
 // op pushes a regexp with the given op onto the stack
@@ -941,7 +945,9 @@ func parse(s string, flags Flags) (_ *Regexp, err error) {
 			p.op(opLeftParen).Cap = p.numCap
 			t = t[1:]
 		case '|':
-			p.parseVerticalBar()
+			if err = p.parseVerticalBar(); err != nil {
+				return nil, err
+			}
 			t = t[1:]
 		case ')':
 			if err = p.parseRightParen(); err != nil {
@@ -1153,18 +1159,9 @@ func (p *parser) parsePerlFlags(s string) (rest string, err error) {
 	// support all three as well. EcmaScript 4 uses only the Python form.
 	//
 	// In both the open source world (via Code Search) and the
-	// Google source tree, (?P<expr>name) and (?<expr>name) are the
-	// dominant forms of named captures and both are supported.
-	startsWithP := len(t) > 4 && t[2] == 'P' && t[3] == '<'
-	startsWithName := len(t) > 3 && t[2] == '<'
-
-	if startsWithP || startsWithName {
-		// position of expr start
-		exprStartPos := 4
-		if startsWithName {
-			exprStartPos = 3
-		}
-
+	// Google source tree, (?P<expr>name) is the dominant form,
+	// so that's the one we implement. One is enough.
+	if len(t) > 4 && t[2] == 'P' && t[3] == '<' {
 		// Pull out name.
 		end := strings.IndexRune(t, '>')
 		if end < 0 {
@@ -1174,8 +1171,8 @@ func (p *parser) parsePerlFlags(s string) (rest string, err error) {
 			return "", &Error{ErrInvalidNamedCapture, s}
 		}
 
-		capture := t[:end+1]        // "(?P<name>" or "(?<name>"
-		name := t[exprStartPos:end] // "name"
+		capture := t[:end+1] // "(?P<name>"
+		name := t[4:end]     // "name"
 		if err = checkUTF8(name); err != nil {
 			return "", err
 		}
@@ -1326,7 +1323,7 @@ func matchRune(re *Regexp, r rune) bool {
 }
 
 // parseVerticalBar handles a | in the input.
-func (p *parser) parseVerticalBar() {
+func (p *parser) parseVerticalBar() error {
 	p.concat()
 
 	// The concatenation we just parsed is on top of the stack.
@@ -1336,6 +1333,8 @@ func (p *parser) parseVerticalBar() {
 	if !p.swapVerticalBar() {
 		p.op(opVerticalBar)
 	}
+
+	return nil
 }
 
 // mergeCharClass makes dst = dst|src.
@@ -1575,8 +1574,6 @@ type charGroup struct {
 	sign  int
 	class []rune
 }
-
-//go:generate perl make_perl_groups.pl perl_groups.go
 
 // parsePerlClassEscape parses a leading Perl character class escape like \d
 // from the beginning of s. If one is present, it appends the characters to r
@@ -1855,22 +1852,6 @@ func cleanClass(rp *[]rune) []rune {
 	}
 
 	return r[:w]
-}
-
-// inCharClass reports whether r is in the class.
-// It assumes the class has been cleaned by cleanClass.
-func inCharClass(r rune, class []rune) bool {
-	_, ok := sort.Find(len(class)/2, func(i int) int {
-		lo, hi := class[2*i], class[2*i+1]
-		if r > hi {
-			return +1
-		}
-		if r < lo {
-			return -1
-		}
-		return 0
-	})
-	return ok
 }
 
 // appendLiteral returns the result of appending the literal x to the class r.

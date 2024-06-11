@@ -318,57 +318,38 @@ func importFromModules(ctx context.Context, path string, rs *Requirements, mg *M
 		mods = append(mods, module.Version{})
 	}
 	// -mod=vendor is special.
-	// Everything must be in the main modules or the main module's or workspace's vendor directory.
+	// Everything must be in the main module or the main module's vendor directory.
 	if cfg.BuildMod == "vendor" {
+		mainModule := MainModules.mustGetSingleMainModule()
+		modRoot := MainModules.ModRoot(mainModule)
 		var mainErr error
-		for _, mainModule := range MainModules.Versions() {
-			modRoot := MainModules.ModRoot(mainModule)
-			if modRoot != "" {
-				dir, mainOK, err := dirInModule(path, MainModules.PathPrefix(mainModule), modRoot, true)
-				if mainErr == nil {
-					mainErr = err
-				}
-				if mainOK {
-					mods = append(mods, mainModule)
-					dirs = append(dirs, dir)
-					roots = append(roots, modRoot)
-				}
+		if modRoot != "" {
+			mainDir, mainOK, err := dirInModule(path, MainModules.PathPrefix(mainModule), modRoot, true)
+			mainErr = err
+			if mainOK {
+				mods = append(mods, mainModule)
+				dirs = append(dirs, mainDir)
+				roots = append(roots, modRoot)
 			}
-		}
-
-		if HasModRoot() {
-			vendorDir := VendorDir()
-			dir, inVendorDir, _ := dirInModule(path, "", vendorDir, false)
-			if inVendorDir {
-				readVendorList(vendorDir)
-				// If vendorPkgModule does not contain an entry for path then it's probably either because
-				// vendor/modules.txt does not exist or the user manually added directories to the vendor directory.
-				// Go 1.23 and later require vendored packages to be present in modules.txt to be imported.
-				_, ok := vendorPkgModule[path]
-				if ok || (gover.Compare(MainModules.GoVersion(), gover.ExplicitModulesTxtImportVersion) < 0) {
-					mods = append(mods, vendorPkgModule[path])
-					dirs = append(dirs, dir)
-					roots = append(roots, vendorDir)
-				} else {
-					subCommand := "mod"
-					if inWorkspaceMode() {
-						subCommand = "work"
-					}
-					fmt.Fprintf(os.Stderr, "go: ignoring package %s which exists in the vendor directory but is missing from vendor/modules.txt. To sync the vendor directory run go %s vendor.\n", path, subCommand)
-				}
+			vendorDir, vendorOK, _ := dirInModule(path, "", filepath.Join(modRoot, "vendor"), false)
+			if vendorOK {
+				readVendorList(mainModule)
+				mods = append(mods, vendorPkgModule[path])
+				dirs = append(dirs, vendorDir)
+				roots = append(roots, modRoot)
 			}
 		}
 
 		if len(dirs) > 1 {
-			return module.Version{}, "", "", nil, &AmbiguousImportError{importPath: path, Dirs: dirs}
+			return module.Version{}, modRoot, "", nil, &AmbiguousImportError{importPath: path, Dirs: dirs}
 		}
 
 		if mainErr != nil {
 			return module.Version{}, "", "", nil, mainErr
 		}
 
-		if len(mods) == 0 {
-			return module.Version{}, "", "", nil, &ImportMissingError{Path: path}
+		if len(dirs) == 0 {
+			return module.Version{}, modRoot, "", nil, &ImportMissingError{Path: path}
 		}
 
 		return mods[0], roots[0], dirs[0], nil, nil
@@ -714,7 +695,7 @@ func dirInModule(path, mpath, mdir string, isLocal bool) (dir string, haveGoFile
 	// Now committed to returning dir (not "").
 
 	// Are there Go source files in the directory?
-	// We don't care about build tags, not even "go:build ignore".
+	// We don't care about build tags, not even "+build ignore".
 	// We're just looking for a plausible directory.
 	haveGoFiles, err = haveGoFilesCache.Do(dir, func() (bool, error) {
 		// modindex.GetPackage will return ErrNotIndexed for any directories which

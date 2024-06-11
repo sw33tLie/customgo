@@ -44,9 +44,9 @@ stderr '^go: module rsc.io/quote/buggy: not a known dependency'
 
 # Module loader does not interfere with list -e (golang.org/issue/24149).
 go list -e -f '{{.Error.Err}}' database
-stdout 'package database is not in std'
+stdout 'no Go files in '
 ! go list database
-stderr 'package database is not in std'
+stderr 'no Go files in '
 
 -- go.mod --
 module x

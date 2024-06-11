@@ -6,7 +6,6 @@ package walk
 
 import (
 	"go/constant"
-	"internal/abi"
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
@@ -104,7 +103,7 @@ func walkAssign(init *ir.Nodes, n ir.Node) ir.Node {
 			// Left in place for back end.
 			// Do not add a new write barrier.
 			// Set up address of type for back end.
-			r.Fun = reflectdata.AppendElemRType(base.Pos, r)
+			r.X = reflectdata.AppendElemRType(base.Pos, r)
 			return as
 		}
 		// Otherwise, lowered for race detector.
@@ -169,13 +168,13 @@ func walkAssignMapRead(init *ir.Nodes, n *ir.AssignListStmt) ir.Node {
 	a := n.Lhs[0]
 
 	var call *ir.CallExpr
-	if w := t.Elem().Size(); w <= abi.ZeroValSize {
+	if w := t.Elem().Size(); w <= zeroValSize {
 		fn := mapfn(mapaccess2[fast], t, false)
-		call = mkcall1(fn, fn.Type().ResultsTuple(), init, reflectdata.IndexMapRType(base.Pos, r), r.X, key)
+		call = mkcall1(fn, fn.Type().Results(), init, reflectdata.IndexMapRType(base.Pos, r), r.X, key)
 	} else {
 		fn := mapfn("mapaccess2_fat", t, true)
 		z := reflectdata.ZeroAddr(w)
-		call = mkcall1(fn, fn.Type().ResultsTuple(), init, reflectdata.IndexMapRType(base.Pos, r), r.X, key, z)
+		call = mkcall1(fn, fn.Type().Results(), init, reflectdata.IndexMapRType(base.Pos, r), r.X, key, z)
 	}
 
 	// mapaccess2* returns a typed bool, but due to spec changes,
@@ -192,7 +191,7 @@ func walkAssignMapRead(init *ir.Nodes, n *ir.AssignListStmt) ir.Node {
 		return walkExpr(typecheck.Stmt(n), init)
 	}
 
-	var_ := typecheck.TempAt(base.Pos, ir.CurFunc, types.NewPtr(t.Elem()))
+	var_ := typecheck.Temp(types.NewPtr(t.Elem()))
 	var_.SetTypecheck(1)
 	var_.MarkNonNil() // mapaccess always returns a non-nil pointer
 
@@ -231,7 +230,7 @@ func walkReturn(n *ir.ReturnStmt) ir.Node {
 		return n
 	}
 
-	results := fn.Type().Results()
+	results := fn.Type().Results().FieldSlice()
 	dsts := make([]ir.Node, len(results))
 	for i, v := range results {
 		// TODO(mdempsky): typecheck should have already checked the result variables.
@@ -393,7 +392,7 @@ func ascompatee(op ir.Op, nl, nr []ir.Node) []ir.Node {
 			continue
 		}
 
-		if ir.IsBlank(name) {
+		if sym := types.OrigSym(name.Sym()); sym == nil || sym.IsBlank() {
 			// We can ignore assignments to blank or anonymous result parameters.
 			// These can't appear in expressions anyway.
 			continue
@@ -433,6 +432,7 @@ func readsMemory(n ir.Node) bool {
 		ir.OBITNOT,
 		ir.OCONV,
 		ir.OCONVIFACE,
+		ir.OCONVIDATA,
 		ir.OCONVNOP,
 		ir.ODIV,
 		ir.ODOT,
@@ -484,7 +484,7 @@ func appendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 	var nodes ir.Nodes
 
 	// var s []T
-	s := typecheck.TempAt(base.Pos, ir.CurFunc, l1.Type())
+	s := typecheck.Temp(l1.Type())
 	nodes.Append(ir.NewAssignStmt(base.Pos, s, l1)) // s = l1
 
 	elemtype := s.Type().Elem()
@@ -498,7 +498,7 @@ func appendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 	num := ir.NewUnaryExpr(base.Pos, ir.OLEN, l2)
 
 	// newLen := oldLen + num
-	newLen := typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TINT])
+	newLen := typecheck.Temp(types.Types[types.TINT])
 	nodes.Append(ir.NewAssignStmt(base.Pos, newLen, ir.NewBinaryExpr(base.Pos, ir.OADD, oldLen, num)))
 
 	// if uint(newLen) <= uint(oldCap)
@@ -513,8 +513,12 @@ func appendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 	slice.SetBounded(true)
 	nif.Body = []ir.Node{ir.NewAssignStmt(base.Pos, s, slice)}
 
+	// func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) []T
+	fn := typecheck.LookupRuntime("growslice")
+	fn = typecheck.SubstArgTypes(fn, elemtype, elemtype)
+
 	// else { s = growslice(oldPtr, newLen, oldCap, num, T) }
-	call := walkGrowslice(s, nif.PtrInit(), oldPtr, newLen, oldCap, num)
+	call := mkcall1(fn, s.Type(), nif.PtrInit(), oldPtr, newLen, oldCap, num, reflectdata.TypePtr(elemtype))
 	nif.Else = []ir.Node{ir.NewAssignStmt(base.Pos, s, call)}
 
 	nodes.Append(nif)
@@ -537,7 +541,8 @@ func appendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 		ir.CurFunc.SetWBPos(n.Pos())
 
 		// instantiate typedslicecopy(typ *type, dstPtr *any, dstLen int, srcPtr *any, srcLen int) int
-		fn := typecheck.LookupRuntime("typedslicecopy", l1.Type().Elem(), l2.Type().Elem())
+		fn := typecheck.LookupRuntime("typedslicecopy")
+		fn = typecheck.SubstArgTypes(fn, l1.Type().Elem(), l2.Type().Elem())
 		ptr1, len1 := backingArrayPtrLen(cheapExpr(slice, &nodes))
 		ptr2, len2 := backingArrayPtrLen(l2)
 		ncopy = mkcall1(fn, types.Types[types.TINT], &nodes, reflectdata.AppendElemRType(base.Pos, n), ptr1, len1, ptr2, len2)
@@ -552,7 +557,8 @@ func appendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 		ptr1, len1 := backingArrayPtrLen(cheapExpr(slice, &nodes))
 		ptr2, len2 := backingArrayPtrLen(l2)
 
-		fn := typecheck.LookupRuntime("slicecopy", ptr1.Type().Elem(), ptr2.Type().Elem())
+		fn := typecheck.LookupRuntime("slicecopy")
+		fn = typecheck.SubstArgTypes(fn, ptr1.Type().Elem(), ptr2.Type().Elem())
 		ncopy = mkcall1(fn, types.Types[types.TINT], &nodes, ptr1, len1, ptr2, len2, ir.NewInt(base.Pos, elemtype.Size()))
 	} else {
 		// memmove(&s[idx], &l2[0], len(l2)*sizeof(T))
@@ -566,7 +572,8 @@ func appendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 		nwid = ir.NewBinaryExpr(base.Pos, ir.OMUL, nwid, ir.NewInt(base.Pos, elemtype.Size()))
 
 		// instantiate func memmove(to *any, frm *any, length uintptr)
-		fn := typecheck.LookupRuntime("memmove", elemtype, elemtype)
+		fn := typecheck.LookupRuntime("memmove")
+		fn = typecheck.SubstArgTypes(fn, elemtype, elemtype)
 		ncopy = mkcall1(fn, nil, &nodes, addr, sptr, nwid)
 	}
 	ln := append(nodes, ncopy)
@@ -623,23 +630,21 @@ func isAppendOfMake(n ir.Node) bool {
 //	    panicmakeslicelen()
 //	  }
 //	  s := l1
-//	  if l2 != 0 {
-//	    n := len(s) + l2
-//	    // Compare n and s as uint so growslice can panic on overflow of len(s) + l2.
-//	    // cap is a positive int and n can become negative when len(s) + l2
-//	    // overflows int. Interpreting n when negative as uint makes it larger
-//	    // than cap(s). growslice will check the int n arg and panic if n is
-//	    // negative. This prevents the overflow from being undetected.
-//	    if uint(n) <= uint(cap(s)) {
-//	      s = s[:n]
-//	    } else {
-//	      s = growslice(T, s.ptr, n, s.cap, l2, T)
-//	    }
-//	    // clear the new portion of the underlying array.
-//	    hp := &s[len(s)-l2]
-//	    hn := l2 * sizeof(T)
-//	    memclr(hp, hn)
+//	  n := len(s) + l2
+//	  // Compare n and s as uint so growslice can panic on overflow of len(s) + l2.
+//	  // cap is a positive int and n can become negative when len(s) + l2
+//	  // overflows int. Interpreting n when negative as uint makes it larger
+//	  // than cap(s). growslice will check the int n arg and panic if n is
+//	  // negative. This prevents the overflow from being undetected.
+//	  if uint(n) <= uint(cap(s)) {
+//	    s = s[:n]
+//	  } else {
+//	    s = growslice(T, s.ptr, n, s.cap, l2, T)
 //	  }
+//	  // clear the new portion of the underlying array.
+//	  hp := &s[len(s)-l2]
+//	  hn := l2 * sizeof(T)
+//	  memclr(hp, hn)
 //	}
 //	s
 //
@@ -670,21 +675,14 @@ func extendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 	nodes = append(nodes, nifneg)
 
 	// s := l1
-	s := typecheck.TempAt(base.Pos, ir.CurFunc, l1.Type())
+	s := typecheck.Temp(l1.Type())
 	nodes = append(nodes, ir.NewAssignStmt(base.Pos, s, l1))
-
-	// if l2 != 0 {
-	// Avoid work if we're not appending anything. But more importantly,
-	// avoid allowing hp to be a past-the-end pointer when clearing. See issue 67255.
-	nifnz := ir.NewIfStmt(base.Pos, ir.NewBinaryExpr(base.Pos, ir.ONE, l2, ir.NewInt(base.Pos, 0)), nil, nil)
-	nifnz.Likely = true
-	nodes = append(nodes, nifnz)
 
 	elemtype := s.Type().Elem()
 
 	// n := s.len + l2
-	nn := typecheck.TempAt(base.Pos, ir.CurFunc, types.Types[types.TINT])
-	nifnz.Body = append(nifnz.Body, ir.NewAssignStmt(base.Pos, nn, ir.NewBinaryExpr(base.Pos, ir.OADD, ir.NewUnaryExpr(base.Pos, ir.OLEN, s), l2)))
+	nn := typecheck.Temp(types.Types[types.TINT])
+	nodes = append(nodes, ir.NewAssignStmt(base.Pos, nn, ir.NewBinaryExpr(base.Pos, ir.OADD, ir.NewUnaryExpr(base.Pos, ir.OLEN, s), l2)))
 
 	// if uint(n) <= uint(s.cap)
 	nuint := typecheck.Conv(nn, types.Types[types.TUINT])
@@ -697,16 +695,21 @@ func extendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 	nt.SetBounded(true)
 	nif.Body = []ir.Node{ir.NewAssignStmt(base.Pos, s, nt)}
 
+	// instantiate growslice(oldPtr *any, newLen, oldCap, num int, typ *type) []any
+	fn := typecheck.LookupRuntime("growslice")
+	fn = typecheck.SubstArgTypes(fn, elemtype, elemtype)
+
 	// else { s = growslice(s.ptr, n, s.cap, l2, T) }
 	nif.Else = []ir.Node{
-		ir.NewAssignStmt(base.Pos, s, walkGrowslice(s, nif.PtrInit(),
+		ir.NewAssignStmt(base.Pos, s, mkcall1(fn, s.Type(), nif.PtrInit(),
 			ir.NewUnaryExpr(base.Pos, ir.OSPTR, s),
 			nn,
 			ir.NewUnaryExpr(base.Pos, ir.OCAP, s),
-			l2)),
+			l2,
+			reflectdata.TypePtr(elemtype))),
 	}
 
-	nifnz.Body = append(nifnz.Body, nif)
+	nodes = append(nodes, nif)
 
 	// hp := &s[s.len - l2]
 	// TODO: &s[s.len] - hn?
@@ -732,7 +735,7 @@ func extendSlice(n *ir.CallExpr, init *ir.Nodes) ir.Node {
 		// if growslice isn't called do we need to do the zeroing ourselves.
 		nif.Body = append(nif.Body, clr...)
 	} else {
-		nifnz.Body = append(nifnz.Body, clr...)
+		nodes = append(nodes, clr...)
 	}
 
 	typecheck.Stmts(nodes)

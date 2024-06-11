@@ -366,11 +366,6 @@ func domainToReverseLabels(domain string) (reverseLabels []string, ok bool) {
 		} else {
 			reverseLabels = append(reverseLabels, domain[i+1:])
 			domain = domain[:i]
-			if i == 0 { // domain == ""
-				// domain is prefixed with an empty label, append an empty
-				// string to reverseLabels to indicate this.
-				reverseLabels = append(reverseLabels, "")
-			}
 		}
 	}
 
@@ -757,7 +752,7 @@ func (c *Certificate) Verify(opts VerifyOptions) (chains [][]*Certificate, err e
 		return nil, errNotParsed
 	}
 	for i := 0; i < opts.Intermediates.len(); i++ {
-		c, _, err := opts.Intermediates.cert(i)
+		c, err := opts.Intermediates.cert(i)
 		if err != nil {
 			return nil, fmt.Errorf("crypto/x509: error fetching intermediate: %w", err)
 		}
@@ -903,8 +898,8 @@ func (c *Certificate) buildChains(currentChain []*Certificate, sigChecks *int, o
 		hintCert *Certificate
 	)
 
-	considerCandidate := func(certType int, candidate potentialParent) {
-		if candidate.cert.PublicKey == nil || alreadyInChain(candidate.cert, currentChain) {
+	considerCandidate := func(certType int, candidate *Certificate) {
+		if alreadyInChain(candidate, currentChain) {
 			return
 		}
 
@@ -917,39 +912,29 @@ func (c *Certificate) buildChains(currentChain []*Certificate, sigChecks *int, o
 			return
 		}
 
-		if err := c.CheckSignatureFrom(candidate.cert); err != nil {
+		if err := c.CheckSignatureFrom(candidate); err != nil {
 			if hintErr == nil {
 				hintErr = err
-				hintCert = candidate.cert
+				hintCert = candidate
 			}
 			return
 		}
 
-		err = candidate.cert.isValid(certType, currentChain, opts)
+		err = candidate.isValid(certType, currentChain, opts)
 		if err != nil {
 			if hintErr == nil {
 				hintErr = err
-				hintCert = candidate.cert
+				hintCert = candidate
 			}
 			return
-		}
-
-		if candidate.constraint != nil {
-			if err := candidate.constraint(currentChain); err != nil {
-				if hintErr == nil {
-					hintErr = err
-					hintCert = candidate.cert
-				}
-				return
-			}
 		}
 
 		switch certType {
 		case rootCertificate:
-			chains = append(chains, appendToFreshChain(currentChain, candidate.cert))
+			chains = append(chains, appendToFreshChain(currentChain, candidate))
 		case intermediateCertificate:
 			var childChains [][]*Certificate
-			childChains, err = candidate.cert.buildChains(appendToFreshChain(currentChain, candidate.cert), sigChecks, opts)
+			childChains, err = candidate.buildChains(appendToFreshChain(currentChain, candidate), sigChecks, opts)
 			chains = append(chains, childChains...)
 		}
 	}
@@ -982,11 +967,6 @@ func validHostname(host string, isPattern bool) bool {
 		host = strings.TrimSuffix(host, ".")
 	}
 	if len(host) == 0 {
-		return false
-	}
-	if host == "*" {
-		// Bare wildcards are not allowed, they are not valid DNS names,
-		// nor are they allowed per RFC 6125.
 		return false
 	}
 

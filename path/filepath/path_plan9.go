@@ -4,9 +4,22 @@
 
 package filepath
 
-import (
-	"strings"
-)
+import "strings"
+
+func isLocal(path string) bool {
+	return unixIsLocal(path)
+}
+
+// IsAbs reports whether the path is absolute.
+func IsAbs(path string) bool {
+	return strings.HasPrefix(path, "/") || strings.HasPrefix(path, "#")
+}
+
+// volumeNameLen returns length of the leading volume name on Windows.
+// It returns 0 elsewhere.
+func volumeNameLen(path string) int {
+	return 0
+}
 
 // HasPrefix exists for historical compatibility and should not be used.
 //

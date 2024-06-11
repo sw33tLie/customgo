@@ -5,13 +5,9 @@
 package os
 
 import (
-	"internal/bytealg"
 	"internal/poll"
-	"internal/stringslite"
 	"io"
 	"runtime"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -29,15 +25,15 @@ type file struct {
 	fdmu       poll.FDMutex
 	fd         int
 	name       string
-	dirinfo    atomic.Pointer[dirInfo] // nil unless directory being read
-	appendMode bool                    // whether file is opened for appending
+	dirinfo    *dirInfo // nil unless directory being read
+	appendMode bool     // whether file is opened for appending
 }
 
 // Fd returns the integer Plan 9 file descriptor referencing the open file.
 // If f is closed, the file descriptor becomes invalid.
 // If f is garbage collected, a finalizer may close the file descriptor,
-// making it invalid; see [runtime.SetFinalizer] for more information on when
-// a finalizer might be run. On Unix systems this will cause the [File.SetDeadline]
+// making it invalid; see runtime.SetFinalizer for more information on when
+// a finalizer might be run. On Unix systems this will cause the SetDeadline
 // methods to stop working.
 //
 // As an alternative, see the f.SyscallConn method.
@@ -63,7 +59,6 @@ func NewFile(fd uintptr, name string) *File {
 
 // Auxiliary information if the File describes a directory
 type dirInfo struct {
-	mu   sync.Mutex
 	buf  [syscall.STATMAX]byte // buffer for directory I/O
 	nbuf int                   // length of buf; return value from Read
 	bufp int                   // location of next record in buf.
@@ -141,10 +136,6 @@ func openFileNolog(name string, flag int, perm FileMode) (*File, error) {
 	}
 
 	return NewFile(uintptr(fd), name), nil
-}
-
-func openDirNolog(name string) (*File, error) {
-	return openFileNolog(name, O_RDONLY, 0)
 }
 
 // Close closes the File, rendering it unusable for I/O.
@@ -353,9 +344,11 @@ func (f *File) seek(offset int64, whence int) (ret int64, err error) {
 		return 0, err
 	}
 	defer f.decref()
-	// Free cached dirinfo, so we allocate a new one if we
-	// access this file as a directory again. See #35767 and #37161.
-	f.dirinfo.Store(nil)
+	if f.dirinfo != nil {
+		// Free cached dirinfo, so we allocate a new one if we
+		// access this file as a directory again. See #35767 and #37161.
+		f.dirinfo = nil
+	}
 	return syscall.Seek(f.fd, offset, whence)
 }
 
@@ -388,9 +381,14 @@ func Remove(name string) error {
 	return nil
 }
 
+// hasPrefix from the strings package.
+func hasPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[0:len(prefix)] == prefix
+}
+
 func rename(oldname, newname string) error {
-	dirname := oldname[:bytealg.LastIndexByteString(oldname, '/')+1]
-	if stringslite.HasPrefix(newname, dirname) {
+	dirname := oldname[:lastIndex(oldname, '/')+1]
+	if hasPrefix(newname, dirname) {
 		newname = newname[len(dirname):]
 	} else {
 		return &LinkError{"rename", oldname, newname, ErrInvalid}
@@ -398,7 +396,7 @@ func rename(oldname, newname string) error {
 
 	// If newname still contains slashes after removing the oldname
 	// prefix, the rename is cross-directory and must be rejected.
-	if bytealg.LastIndexByteString(newname, '/') >= 0 {
+	if lastIndex(newname, '/') >= 0 {
 		return &LinkError{"rename", oldname, newname, ErrInvalid}
 	}
 
@@ -506,7 +504,9 @@ func Symlink(oldname, newname string) error {
 	return &LinkError{"symlink", oldname, newname, syscall.EPLAN9}
 }
 
-func readlink(name string) (string, error) {
+// Readlink returns the destination of the named symbolic link.
+// If there is an error, it will be of type *PathError.
+func Readlink(name string) (string, error) {
 	return "", &PathError{Op: "readlink", Path: name, Err: syscall.EPLAN9}
 }
 
@@ -543,6 +543,7 @@ func tempDir() string {
 		dir = "/tmp"
 	}
 	return dir
+
 }
 
 // Chdir changes the current working directory to the file,

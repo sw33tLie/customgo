@@ -5,7 +5,6 @@
 package poll
 
 import (
-	"errors"
 	"internal/syscall/unix"
 	"syscall"
 )
@@ -20,13 +19,6 @@ func (fd *FD) Fsync() error {
 	defer fd.decref()
 	return ignoringEINTR(func() error {
 		_, err := unix.Fcntl(fd.Sysfd, syscall.F_FULLFSYNC, 0)
-
-		// There are scenarios such as SMB mounts where fcntl will fail
-		// with ENOTSUP. In those cases fallback to fsync.
-		// See #64215
-		if err != nil && errors.Is(err, syscall.ENOTSUP) {
-			err = syscall.Fsync(fd.Sysfd)
-		}
 		return err
 	})
 }

@@ -8,7 +8,7 @@ package user
 
 import (
 	"fmt"
-	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -92,8 +92,8 @@ func checkSameIDs(t *testing.T, got, want []string) {
 		t.Errorf("ID list mismatch: got %v; want %v", got, want)
 		return
 	}
-	slices.Sort(got)
-	slices.Sort(want)
+	sort.Strings(got)
+	sort.Strings(want)
 	mismatch := -1
 	for i, g := range want {
 		if got[i] != g {

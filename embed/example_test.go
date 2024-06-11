@@ -14,9 +14,9 @@ import (
 var content embed.FS
 
 func Example() {
-	mux := http.NewServeMux()
-	mux.Handle("/", http.FileServer(http.FS(content)))
-	err := http.ListenAndServe(":8080", mux)
+	mutex := http.NewServeMux()
+	mutex.Handle("/", http.FileServer(http.FS(content)))
+	err := http.ListenAndServe(":8080", mutex)
 	if err != nil {
 		log.Fatal(err)
 	}

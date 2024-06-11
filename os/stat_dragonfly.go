@@ -5,13 +5,12 @@
 package os
 
 import (
-	"internal/filepathlite"
 	"syscall"
 	"time"
 )
 
 func fillFileStatFromSys(fs *fileStat, name string) {
-	fs.name = filepathlite.Base(name)
+	fs.name = basename(name)
 	fs.size = fs.sys.Size
 	fs.modTime = time.Unix(fs.sys.Mtim.Unix())
 	fs.mode = FileMode(fs.sys.Mode & 0777)

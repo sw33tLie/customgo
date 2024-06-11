@@ -13,7 +13,7 @@
 package runtime
 
 import (
-	"internal/runtime/atomic"
+	"runtime/internal/atomic"
 	"runtime/internal/sys"
 )
 
@@ -84,10 +84,8 @@ func (c *mcentral) cacheSpan() *mspan {
 	deductSweepCredit(spanBytes, 0)
 
 	traceDone := false
-	trace := traceAcquire()
-	if trace.ok() {
-		trace.GCSweepStart()
-		traceRelease(trace)
+	if traceEnabled() {
+		traceGCSweepStart()
 	}
 
 	// If we sweep spanBudget spans without finding any free
@@ -159,11 +157,9 @@ func (c *mcentral) cacheSpan() *mspan {
 		}
 		sweep.active.end(sl)
 	}
-	trace = traceAcquire()
-	if trace.ok() {
-		trace.GCSweepDone()
+	if traceEnabled() {
+		traceGCSweepDone()
 		traceDone = true
-		traceRelease(trace)
 	}
 
 	// We failed to get a span from the mcentral so get one from mheap.
@@ -174,15 +170,11 @@ func (c *mcentral) cacheSpan() *mspan {
 
 	// At this point s is a span that should have free slots.
 havespan:
-	if !traceDone {
-		trace := traceAcquire()
-		if trace.ok() {
-			trace.GCSweepDone()
-			traceRelease(trace)
-		}
+	if traceEnabled() && !traceDone {
+		traceGCSweepDone()
 	}
 	n := int(s.nelems) - int(s.allocCount)
-	if n == 0 || s.freeindex == s.nelems || s.allocCount == s.nelems {
+	if n == 0 || s.freeindex == s.nelems || uintptr(s.allocCount) == s.nelems {
 		throw("span has no free objects")
 	}
 	freeByteBase := s.freeindex &^ (64 - 1)

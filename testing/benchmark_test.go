@@ -6,9 +6,8 @@ package testing_test
 
 import (
 	"bytes"
-	"cmp"
 	"runtime"
-	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -169,9 +168,9 @@ func ExampleB_ReportMetric() {
 		var compares int64
 		for i := 0; i < b.N; i++ {
 			s := []int{5, 4, 3, 2, 1}
-			slices.SortFunc(s, func(a, b int) int {
+			sort.Slice(s, func(i, j int) bool {
 				compares++
-				return cmp.Compare(a, b)
+				return s[i] < s[j]
 			})
 		}
 		// This metric is per-operation, so divide by b.N and
@@ -191,12 +190,12 @@ func ExampleB_ReportMetric_parallel() {
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
 				s := []int{5, 4, 3, 2, 1}
-				slices.SortFunc(s, func(a, b int) int {
+				sort.Slice(s, func(i, j int) bool {
 					// Because RunParallel runs the function many
 					// times in parallel, we must increment the
 					// counter atomically to avoid racing writes.
 					compares.Add(1)
-					return cmp.Compare(a, b)
+					return s[i] < s[j]
 				})
 			}
 		})

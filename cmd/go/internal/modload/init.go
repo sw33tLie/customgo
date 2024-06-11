@@ -10,9 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"internal/godebugs"
 	"internal/lazyregexp"
-	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -26,6 +24,7 @@ import (
 	"cmd/go/internal/fsys"
 	"cmd/go/internal/gover"
 	"cmd/go/internal/lockedfile"
+	"cmd/go/internal/modconv"
 	"cmd/go/internal/modfetch"
 	"cmd/go/internal/search"
 
@@ -201,10 +200,6 @@ func (mms *MainModuleSet) ModFile(m module.Version) *modfile.File {
 	return mms.modFiles[m]
 }
 
-func (mms *MainModuleSet) WorkFile() *modfile.WorkFile {
-	return mms.workFile
-}
-
 func (mms *MainModuleSet) Len() int {
 	if mms == nil {
 		return 0
@@ -240,27 +235,6 @@ func (mms *MainModuleSet) GoVersion() string {
 		return gover.FromGoMod(f)
 	}
 	return gover.DefaultGoModVersion
-}
-
-// Godebugs returns the godebug lines set on the single module, in module mode,
-// or on the go.work file in workspace mode.
-// The caller must not modify the result.
-func (mms *MainModuleSet) Godebugs() []*modfile.Godebug {
-	if inWorkspaceMode() {
-		if mms.workFile != nil {
-			return mms.workFile.Godebug
-		}
-		return nil
-	}
-	if mms != nil && len(mms.versions) == 1 {
-		f := mms.ModFile(mms.mustGetSingleMainModule())
-		if f == nil {
-			// Special case: we are outside a module, like 'go run x.go'.
-			return nil
-		}
-		return f.Godebug
-	}
-	return nil
 }
 
 // Toolchain returns the toolchain set on the single module, in module mode,
@@ -343,10 +317,6 @@ func BinDir() string {
 // operate in workspace mode. It should not be called by other commands,
 // for example 'go mod tidy', that don't operate in workspace mode.
 func InitWorkfile() {
-	// Initialize fsys early because we need overlay to read go.work file.
-	if err := fsys.Init(base.Cwd()); err != nil {
-		base.Fatal(err)
-	}
 	workFilePath = FindGoWork(base.Cwd())
 }
 
@@ -440,7 +410,7 @@ func Init() {
 	// Disable any ssh connection pooling by Git.
 	// If a Git subprocess forks a child into the background to cache a new connection,
 	// that child keeps stdout/stderr open. After the Git subprocess exits,
-	// os/exec expects to be able to read from the stdout/stderr pipe
+	// os /exec expects to be able to read from the stdout/stderr pipe
 	// until EOF to get all the data that the Git subprocess wrote before exiting.
 	// The EOF doesn't come until the child exits too, because the child
 	// is holding the write end of the pipe.
@@ -511,13 +481,7 @@ func Init() {
 	if len(list) > 0 && list[0] != "" {
 		gopath = list[0]
 		if _, err := fsys.Stat(filepath.Join(gopath, "go.mod")); err == nil {
-			fmt.Fprintf(os.Stderr, "go: warning: ignoring go.mod in $GOPATH %v\n", gopath)
-			if RootMode == NeedRoot {
-				base.Fatal(ErrNoModRoot)
-			}
-			if !mustUseModules {
-				return
-			}
+			base.Fatalf("$GOPATH/go.mod exists but should not")
 		}
 	}
 }
@@ -589,17 +553,7 @@ func Enabled() bool {
 }
 
 func VendorDir() string {
-	if inWorkspaceMode() {
-		return filepath.Join(filepath.Dir(WorkFilePath()), "vendor")
-	}
-	// Even if -mod=vendor, we could be operating with no mod root (and thus no
-	// vendor directory). As long as there are no dependencies that is expected
-	// to work. See script/vendor_outside_module.txt.
-	modRoot := MainModules.ModRoot(MainModules.mustGetSingleMainModule())
-	if modRoot == "" {
-		panic("vendor directory does not exist when in single module mode outside of a module")
-	}
-	return filepath.Join(modRoot, "vendor")
+	return filepath.Join(MainModules.ModRoot(MainModules.mustGetSingleMainModule()), "vendor")
 }
 
 func inWorkspaceMode() bool {
@@ -695,16 +649,10 @@ func loadWorkFile(path string) (workFile *modfile.WorkFile, modRoots []string, e
 		}
 
 		if seen[modRoot] {
-			return nil, nil, fmt.Errorf("error loading go.work:\n%s:%d: path %s appears multiple times in workspace", base.ShortPath(path), d.Syntax.Start.Line, modRoot)
+			return nil, nil, fmt.Errorf("path %s appears multiple times in workspace", modRoot)
 		}
 		seen[modRoot] = true
 		modRoots = append(modRoots, modRoot)
-	}
-
-	for _, g := range wf.Godebug {
-		if err := CheckGodebug("godebug", g.Key, g.Value); err != nil {
-			return nil, nil, fmt.Errorf("error loading go.work:\n%s:%d: %w", base.ShortPath(path), g.Syntax.Start.Line, err)
-		}
 	}
 
 	return wf, modRoots, nil
@@ -712,15 +660,14 @@ func loadWorkFile(path string) (workFile *modfile.WorkFile, modRoots []string, e
 
 // ReadWorkFile reads and parses the go.work file at the given path.
 func ReadWorkFile(path string) (*modfile.WorkFile, error) {
-	path = base.ShortPath(path) // use short path in any errors
-	workData, err := fsys.ReadFile(path)
+	workData, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading go.work: %w", err)
+		return nil, err
 	}
 
 	f, err := modfile.ParseWork(path, workData, nil)
 	if err != nil {
-		return nil, fmt.Errorf("errors parsing go.work:\n%w", err)
+		return nil, err
 	}
 	if f.Go != nil && gover.Compare(f.Go.Version, gover.Local()) > 0 && cfg.CmdName != "work edit" {
 		base.Fatal(&gover.TooNewError{What: base.ShortPath(path), GoVersion: f.Go.Version})
@@ -841,7 +788,7 @@ func loadModFile(ctx context.Context, opts *PackageOpts) (*Requirements, error) 
 		var err error
 		workFile, modRoots, err = loadWorkFile(workFilePath)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reading go.work: %w", err)
 		}
 		for _, modRoot := range modRoots {
 			sumFile := strings.TrimSuffix(modFilePath(modRoot), ".mod") + ".sum"
@@ -947,19 +894,6 @@ func loadModFile(ctx context.Context, opts *PackageOpts) (*Requirements, error) 
 			}
 		}
 
-		if !inWorkspaceMode() {
-			ok := true
-			for _, g := range f.Godebug {
-				if err := CheckGodebug("godebug", g.Key, g.Value); err != nil {
-					errs = append(errs, fmt.Errorf("error loading go.mod:\n%s:%d: %v", base.ShortPath(gomod), g.Syntax.Start.Line, err))
-					ok = false
-				}
-			}
-			if !ok {
-				continue
-			}
-		}
-
 		modFiles = append(modFiles, f)
 		mainModule := f.Module.Mod
 		mainModules = append(mainModules, mainModule)
@@ -980,27 +914,22 @@ func loadModFile(ctx context.Context, opts *PackageOpts) (*Requirements, error) 
 	setDefaultBuildMod() // possibly enable automatic vendoring
 	rs := requirementsFromModFiles(ctx, workFile, modFiles, opts)
 
-	if cfg.BuildMod == "vendor" {
-		readVendorList(VendorDir())
-		var indexes []*modFileIndex
-		var modFiles []*modfile.File
-		var modRoots []string
-		for _, m := range MainModules.Versions() {
-			indexes = append(indexes, MainModules.Index(m))
-			modFiles = append(modFiles, MainModules.ModFile(m))
-			modRoots = append(modRoots, MainModules.ModRoot(m))
-		}
-		checkVendorConsistency(indexes, modFiles, modRoots)
-		rs.initVendor(vendorList)
-	}
-
 	if inWorkspaceMode() {
-		// We don't need to update the mod file so return early.
+		// We don't need to do anything for vendor or update the mod file so
+		// return early.
 		requirements = rs
 		return rs, nil
 	}
 
 	mainModule := MainModules.mustGetSingleMainModule()
+
+	if cfg.BuildMod == "vendor" {
+		readVendorList(mainModule)
+		index := MainModules.Index(mainModule)
+		modFile := MainModules.ModFile(mainModule)
+		checkVendorConsistency(index, modFile)
+		rs.initVendor(vendorList)
+	}
 
 	if rs.hasRedundantRoot() {
 		// If any module path appears more than once in the roots, we know that the
@@ -1047,14 +976,8 @@ func loadModFile(ctx context.Context, opts *PackageOpts) (*Requirements, error) 
 }
 
 func errWorkTooOld(gomod string, wf *modfile.WorkFile, goVers string) error {
-	verb := "lists"
-	if wf == nil || wf.Go == nil {
-		// A go.work file implicitly requires go1.18
-		// even when it doesn't list any version.
-		verb = "implicitly requires"
-	}
-	return fmt.Errorf("module %s listed in go.work file requires go >= %s, but go.work %s go %s; to update it:\n\tgo work use",
-		base.ShortPath(filepath.Dir(gomod)), goVers, verb, gover.FromGoWork(wf))
+	return fmt.Errorf("module %s listed in go.work file requires go >= %s, but go.work lists go %s; to update it:\n\tgo work use",
+		base.ShortPath(filepath.Dir(gomod)), goVers, gover.FromGoWork(wf))
 }
 
 // CreateModFile initializes a new module by creating a go.mod file.
@@ -1106,8 +1029,16 @@ func CreateModFile(ctx context.Context, modPath string) {
 	MainModules = makeMainModules([]module.Version{modFile.Module.Mod}, []string{modRoot}, []*modfile.File{modFile}, []*modFileIndex{nil}, nil)
 	addGoStmt(modFile, modFile.Module.Mod, gover.Local()) // Add the go directive before converted module requirements.
 
+	convertedFrom, err := convertLegacyConfig(modFile, modRoot)
+	if convertedFrom != "" {
+		fmt.Fprintf(os.Stderr, "go: copying requirements from %s\n", base.ShortPath(convertedFrom))
+	}
+	if err != nil {
+		base.Fatal(err)
+	}
+
 	rs := requirementsFromModFiles(ctx, nil, []*modfile.File{modFile}, nil)
-	rs, err := updateRoots(ctx, rs.direct, rs, nil, nil, false)
+	rs, err = updateRoots(ctx, rs.direct, rs, nil, nil, false)
 	if err != nil {
 		base.Fatal(err)
 	}
@@ -1303,7 +1234,6 @@ func makeMainModules(ms []module.Version, rootDirs []string, modFiles []*modfile
 			}
 		}
 	}
-
 	return mainModules
 }
 
@@ -1313,82 +1243,44 @@ func requirementsFromModFiles(ctx context.Context, workFile *modfile.WorkFile, m
 	var roots []module.Version
 	direct := map[string]bool{}
 	var pruning modPruning
+	var goVersion, toolchain string
 	if inWorkspaceMode() {
 		pruning = workspace
 		roots = make([]module.Version, len(MainModules.Versions()), 2+len(MainModules.Versions()))
 		copy(roots, MainModules.Versions())
-		goVersion := gover.FromGoWork(workFile)
-		var toolchain string
+		goVersion = gover.FromGoWork(workFile)
 		if workFile.Toolchain != nil {
 			toolchain = workFile.Toolchain.Name
 		}
-		roots = appendGoAndToolchainRoots(roots, goVersion, toolchain, direct)
-		direct = directRequirements(modFiles)
 	} else {
 		pruning = pruningForGoVersion(MainModules.GoVersion())
 		if len(modFiles) != 1 {
 			panic(fmt.Errorf("requirementsFromModFiles called with %v modfiles outside workspace mode", len(modFiles)))
 		}
 		modFile := modFiles[0]
-		roots, direct = rootsFromModFile(MainModules.mustGetSingleMainModule(), modFile, withToolchainRoot)
-	}
-
-	gover.ModSort(roots)
-	rs := newRequirements(pruning, roots, direct)
-	return rs
-}
-
-type addToolchainRoot bool
-
-const (
-	omitToolchainRoot addToolchainRoot = false
-	withToolchainRoot                  = true
-)
-
-func directRequirements(modFiles []*modfile.File) map[string]bool {
-	direct := make(map[string]bool)
-	for _, modFile := range modFiles {
+		roots = make([]module.Version, 0, 2+len(modFile.Require))
+		mm := MainModules.mustGetSingleMainModule()
 		for _, r := range modFile.Require {
+			if index := MainModules.Index(mm); index != nil && index.exclude[r.Mod] {
+				if cfg.BuildMod == "mod" {
+					fmt.Fprintf(os.Stderr, "go: dropping requirement on excluded version %s %s\n", r.Mod.Path, r.Mod.Version)
+				} else {
+					fmt.Fprintf(os.Stderr, "go: ignoring requirement on excluded version %s %s\n", r.Mod.Path, r.Mod.Version)
+				}
+				continue
+			}
+
+			roots = append(roots, r.Mod)
 			if !r.Indirect {
 				direct[r.Mod.Path] = true
 			}
 		}
-	}
-	return direct
-}
-
-func rootsFromModFile(m module.Version, modFile *modfile.File, addToolchainRoot addToolchainRoot) (roots []module.Version, direct map[string]bool) {
-	direct = make(map[string]bool)
-	padding := 2 // Add padding for the toolchain and go version, added upon return.
-	if !addToolchainRoot {
-		padding = 1
-	}
-	roots = make([]module.Version, 0, padding+len(modFile.Require))
-	for _, r := range modFile.Require {
-		if index := MainModules.Index(m); index != nil && index.exclude[r.Mod] {
-			if cfg.BuildMod == "mod" {
-				fmt.Fprintf(os.Stderr, "go: dropping requirement on excluded version %s %s\n", r.Mod.Path, r.Mod.Version)
-			} else {
-				fmt.Fprintf(os.Stderr, "go: ignoring requirement on excluded version %s %s\n", r.Mod.Path, r.Mod.Version)
-			}
-			continue
-		}
-
-		roots = append(roots, r.Mod)
-		if !r.Indirect {
-			direct[r.Mod.Path] = true
+		goVersion = gover.FromGoMod(modFile)
+		if modFile.Toolchain != nil {
+			toolchain = modFile.Toolchain.Name
 		}
 	}
-	goVersion := gover.FromGoMod(modFile)
-	var toolchain string
-	if addToolchainRoot && modFile.Toolchain != nil {
-		toolchain = modFile.Toolchain.Name
-	}
-	roots = appendGoAndToolchainRoots(roots, goVersion, toolchain, direct)
-	return roots, direct
-}
 
-func appendGoAndToolchainRoots(roots []module.Version, goVersion, toolchain string, direct map[string]bool) []module.Version {
 	// Add explicit go and toolchain versions, inferring as needed.
 	roots = append(roots, module.Version{Path: "go", Version: goVersion})
 	direct["go"] = true // Every module directly uses the language and runtime.
@@ -1401,24 +1293,20 @@ func appendGoAndToolchainRoots(roots []module.Version, goVersion, toolchain stri
 		// automatically if the 'go' version is changed so that it implies the exact
 		// same toolchain.
 	}
-	return roots
+
+	gover.ModSort(roots)
+	rs := newRequirements(pruning, roots, direct)
+	return rs
 }
 
 // setDefaultBuildMod sets a default value for cfg.BuildMod if the -mod flag
 // wasn't provided. setDefaultBuildMod may be called multiple times.
 func setDefaultBuildMod() {
 	if cfg.BuildModExplicit {
-		if inWorkspaceMode() && cfg.BuildMod != "readonly" && cfg.BuildMod != "vendor" {
-			switch cfg.CmdName {
-			case "work sync", "mod graph", "mod verify", "mod why":
-				// These commands run with BuildMod set to mod, but they don't take the
-				// -mod flag, so we should never get here.
-				panic("in workspace mode and -mod was set explicitly, but command doesn't support setting -mod")
-			default:
-				base.Fatalf("go: -mod may only be set to readonly or vendor when in workspace mode, but it is set to %q"+
-					"\n\tRemove the -mod flag to use the default readonly value, "+
-					"\n\tor set GOWORK=off to disable workspace mode.", cfg.BuildMod)
-			}
+		if inWorkspaceMode() && cfg.BuildMod != "readonly" {
+			base.Fatalf("go: -mod may only be set to readonly when in workspace mode, but it is set to %q"+
+				"\n\tRemove the -mod flag to use the default readonly value,"+
+				"\n\tor set GOWORK=off to disable workspace mode.", cfg.BuildMod)
 		}
 		// Don't override an explicit '-mod=' argument.
 		return
@@ -1439,7 +1327,7 @@ func setDefaultBuildMod() {
 		// to work in buggy situations.
 		cfg.BuildMod = "mod"
 		return
-	case "mod vendor", "work vendor":
+	case "mod vendor":
 		cfg.BuildMod = "readonly"
 		return
 	}
@@ -1452,98 +1340,63 @@ func setDefaultBuildMod() {
 		return
 	}
 
-	if len(modRoots) >= 1 {
-		var goVersion string
-		var versionSource string
-		if inWorkspaceMode() {
-			versionSource = "go.work"
-			if wfg := MainModules.WorkFile().Go; wfg != nil {
-				goVersion = wfg.Version
-			}
-		} else {
-			versionSource = "go.mod"
-			index := MainModules.GetSingleIndexOrNil()
-			if index != nil {
-				goVersion = index.goVersion
-			}
-		}
-		vendorDir := ""
-		if workFilePath != "" {
-			vendorDir = filepath.Join(filepath.Dir(workFilePath), "vendor")
-		} else {
-			if len(modRoots) != 1 {
-				panic(fmt.Errorf("outside workspace mode, but have %v modRoots", modRoots))
-			}
-			vendorDir = filepath.Join(modRoots[0], "vendor")
-		}
-		if fi, err := fsys.Stat(vendorDir); err == nil && fi.IsDir() {
-			if goVersion != "" {
-				if gover.Compare(goVersion, "1.14") < 0 {
-					// The go version is less than 1.14. Don't set -mod=vendor by default.
-					// Since a vendor directory exists, we should record why we didn't use it.
-					// This message won't normally be shown, but it may appear with import errors.
-					cfg.BuildModReason = fmt.Sprintf("Go version in "+versionSource+" is %s, so vendor directory was not used.", goVersion)
+	if len(modRoots) == 1 && !inWorkspaceMode() {
+		index := MainModules.GetSingleIndexOrNil()
+		if fi, err := fsys.Stat(filepath.Join(modRoots[0], "vendor")); err == nil && fi.IsDir() {
+			modGo := "unspecified"
+			if index != nil && index.goVersion != "" {
+				if gover.Compare(index.goVersion, "1.14") >= 0 {
+					// The Go version is at least 1.14, and a vendor directory exists.
+					// Set -mod=vendor by default.
+					cfg.BuildMod = "vendor"
+					cfg.BuildModReason = "Go version in go.mod is at least 1.14 and vendor directory exists."
+					return
 				} else {
-					vendoredWorkspace, err := modulesTextIsForWorkspace(vendorDir)
-					if err != nil {
-						base.Fatalf("go: reading modules.txt for vendor directory: %v", err)
-					}
-					if vendoredWorkspace != (versionSource == "go.work") {
-						if vendoredWorkspace {
-							cfg.BuildModReason = "Outside workspace mode, but vendor directory is for a workspace."
-						} else {
-							cfg.BuildModReason = "In workspace mode, but vendor directory is not for a workspace"
-						}
-					} else {
-						// The Go version is at least 1.14, a vendor directory exists, and
-						// the modules.txt was generated in the same mode the command is running in.
-						// Set -mod=vendor by default.
-						cfg.BuildMod = "vendor"
-						cfg.BuildModReason = "Go version in " + versionSource + " is at least 1.14 and vendor directory exists."
-						return
-					}
+					modGo = index.goVersion
 				}
-			} else {
-				cfg.BuildModReason = fmt.Sprintf("Go version in " + versionSource + " is unspecified, so vendor directory was not used.")
 			}
+
+			// Since a vendor directory exists, we should record why we didn't use it.
+			// This message won't normally be shown, but it may appear with import errors.
+			cfg.BuildModReason = fmt.Sprintf("Go version in go.mod is %s, so vendor directory was not used.", modGo)
 		}
 	}
 
 	cfg.BuildMod = "readonly"
 }
 
-func modulesTextIsForWorkspace(vendorDir string) (bool, error) {
-	f, err := fsys.Open(filepath.Join(vendorDir, "modules.txt"))
-	if errors.Is(err, os.ErrNotExist) {
-		// Some vendor directories exist that don't contain modules.txt.
-		// This mostly happens when converting to modules.
-		// We want to preserve the behavior that mod=vendor is set (even though
-		// readVendorList does nothing in that case).
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	var buf [512]byte
-	n, err := f.Read(buf[:])
-	if err != nil && err != io.EOF {
-		return false, err
-	}
-	line, _, _ := strings.Cut(string(buf[:n]), "\n")
-	if annotations, ok := strings.CutPrefix(line, "## "); ok {
-		for _, entry := range strings.Split(annotations, ";") {
-			entry = strings.TrimSpace(entry)
-			if entry == "workspace" {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
 func mustHaveCompleteRequirements() bool {
 	return cfg.BuildMod != "mod" && !inWorkspaceMode()
+}
+
+// convertLegacyConfig imports module requirements from a legacy vendoring
+// configuration file, if one is present.
+func convertLegacyConfig(modFile *modfile.File, modRoot string) (from string, err error) {
+	noneSelected := func(path string) (version string) { return "none" }
+	queryPackage := func(path, rev string) (module.Version, error) {
+		pkgMods, modOnly, err := QueryPattern(context.Background(), path, rev, noneSelected, nil)
+		if err != nil {
+			return module.Version{}, err
+		}
+		if len(pkgMods) > 0 {
+			return pkgMods[0].Mod, nil
+		}
+		return modOnly.Mod, nil
+	}
+	for _, name := range altConfigs {
+		cfg := filepath.Join(modRoot, name)
+		data, err := os.ReadFile(cfg)
+		if err == nil {
+			convert := modconv.Converters[name]
+			if convert == nil {
+				return "", nil
+			}
+			cfg = filepath.ToSlash(cfg)
+			err := modconv.ConvertLegacyConfig(modFile, cfg, data, queryPackage)
+			return name, err
+		}
+	}
+	return "", nil
 }
 
 // addGoStmt adds a go directive to the go.mod file if it does not already
@@ -1564,6 +1417,17 @@ func forceGoStmt(modFile *modfile.File, mod module.Version, v string) {
 }
 
 var altConfigs = []string{
+	"Gopkg.lock",
+
+	"GLOCKFILE",
+	"Godeps/Godeps.json",
+	"dependencies.tsv",
+	"glide.lock",
+	"vendor.conf",
+	"vendor.yml",
+	"vendor/manifest",
+	"vendor/vendor.json",
+
 	".git/config",
 }
 
@@ -1755,25 +1619,32 @@ func WriteGoMod(ctx context.Context, opts WriteOpts) error {
 	return commitRequirements(ctx, opts)
 }
 
-var errNoChange = errors.New("no update needed")
-
-// UpdateGoModFromReqs returns a modified go.mod file using the current
-// requirements. It does not commit these changes to disk.
-func UpdateGoModFromReqs(ctx context.Context, opts WriteOpts) (before, after []byte, modFile *modfile.File, err error) {
+// commitRequirements ensures go.mod and go.sum are up to date with the current
+// requirements.
+//
+// In "mod" mode, commitRequirements writes changes to go.mod and go.sum.
+//
+// In "readonly" and "vendor" modes, commitRequirements returns an error if
+// go.mod or go.sum are out of date in a semantically significant way.
+//
+// In workspace mode, commitRequirements only writes changes to go.work.sum.
+func commitRequirements(ctx context.Context, opts WriteOpts) (err error) {
+	if inWorkspaceMode() {
+		// go.mod files aren't updated in workspace mode, but we still want to
+		// update the go.work.sum file.
+		return modfetch.WriteGoSum(ctx, keepSums(ctx, loaded, requirements, addBuildListZipSums), mustHaveCompleteRequirements())
+	}
 	if MainModules.Len() != 1 || MainModules.ModRoot(MainModules.Versions()[0]) == "" {
 		// We aren't in a module, so we don't have anywhere to write a go.mod file.
-		return nil, nil, nil, errNoChange
+		return nil
 	}
 	mainModule := MainModules.mustGetSingleMainModule()
-	modFile = MainModules.ModFile(mainModule)
+	modFile := MainModules.ModFile(mainModule)
 	if modFile == nil {
 		// command-line-arguments has no .mod file to write.
-		return nil, nil, nil, errNoChange
+		return nil
 	}
-	before, err = modFile.Format()
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	modFilePath := modFilePath(MainModules.ModRoot(mainModule))
 
 	var list []*modfile.Require
 	toolchain := ""
@@ -1801,7 +1672,7 @@ func UpdateGoModFromReqs(ctx context.Context, opts WriteOpts) (before, after []b
 	}
 	if gover.Compare(goVersion, gover.Local()) > 0 {
 		// We cannot assume that we know how to update a go.mod to a newer version.
-		return nil, nil, nil, &gover.TooNewError{What: "updating go.mod", GoVersion: goVersion}
+		return &gover.TooNewError{What: "updating go.mod", GoVersion: goVersion}
 	}
 	wroteGo := opts.TidyWroteGo
 	if !wroteGo && modFile.Go == nil || modFile.Go.Version != goVersion {
@@ -1850,35 +1721,6 @@ func UpdateGoModFromReqs(ctx context.Context, opts WriteOpts) (before, after []b
 		modFile.SetRequireSeparateIndirect(list)
 	}
 	modFile.Cleanup()
-	after, err = modFile.Format()
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return before, after, modFile, nil
-}
-
-// commitRequirements ensures go.mod and go.sum are up to date with the current
-// requirements.
-//
-// In "mod" mode, commitRequirements writes changes to go.mod and go.sum.
-//
-// In "readonly" and "vendor" modes, commitRequirements returns an error if
-// go.mod or go.sum are out of date in a semantically significant way.
-//
-// In workspace mode, commitRequirements only writes changes to go.work.sum.
-func commitRequirements(ctx context.Context, opts WriteOpts) (err error) {
-	if inWorkspaceMode() {
-		// go.mod files aren't updated in workspace mode, but we still want to
-		// update the go.work.sum file.
-		return modfetch.WriteGoSum(ctx, keepSums(ctx, loaded, requirements, addBuildListZipSums), mustHaveCompleteRequirements())
-	}
-	_, updatedGoMod, modFile, err := UpdateGoModFromReqs(ctx, opts)
-	if err != nil {
-		if errors.Is(err, errNoChange) {
-			return nil
-		}
-		return err
-	}
 
 	index := MainModules.GetSingleIndexOrNil()
 	dirty := index.modFileIsDirty(modFile)
@@ -1900,18 +1742,20 @@ func commitRequirements(ctx context.Context, opts WriteOpts) (err error) {
 		}
 		return nil
 	}
-
-	mainModule := MainModules.mustGetSingleMainModule()
-	modFilePath := modFilePath(MainModules.ModRoot(mainModule))
 	if _, ok := fsys.OverlayPath(modFilePath); ok {
 		if dirty {
 			return errors.New("updates to go.mod needed, but go.mod is part of the overlay specified with -overlay")
 		}
 		return nil
 	}
+
+	new, err := modFile.Format()
+	if err != nil {
+		return err
+	}
 	defer func() {
 		// At this point we have determined to make the go.mod file on disk equal to new.
-		MainModules.SetIndex(mainModule, indexModFile(updatedGoMod, modFile, mainModule, false))
+		MainModules.SetIndex(mainModule, indexModFile(new, modFile, mainModule, false))
 
 		// Update go.sum after releasing the side lock and refreshing the index.
 		// 'go mod init' shouldn't write go.sum, since it will be incomplete.
@@ -1928,8 +1772,10 @@ func commitRequirements(ctx context.Context, opts WriteOpts) (err error) {
 		defer unlock()
 	}
 
+	errNoChange := errors.New("no update needed")
+
 	err = lockedfile.Transform(modFilePath, func(old []byte) ([]byte, error) {
-		if bytes.Equal(old, updatedGoMod) {
+		if bytes.Equal(old, new) {
 			// The go.mod file is already equal to new, possibly as the result of some
 			// other process.
 			return nil, errNoChange
@@ -1945,7 +1791,7 @@ func commitRequirements(ctx context.Context, opts WriteOpts) (err error) {
 			return nil, fmt.Errorf("existing contents have changed since last read")
 		}
 
-		return updatedGoMod, nil
+		return new, nil
 	})
 
 	if err != nil && err != errNoChange {
@@ -2130,34 +1976,4 @@ func suggestGopkgIn(path string) string {
 		return url + ".v1"
 	}
 	return url + ".v" + m
-}
-
-func CheckGodebug(verb, k, v string) error {
-	if strings.ContainsAny(k, " \t") {
-		return fmt.Errorf("key contains space")
-	}
-	if strings.ContainsAny(v, " \t") {
-		return fmt.Errorf("value contains space")
-	}
-	if strings.ContainsAny(k, ",") {
-		return fmt.Errorf("key contains comma")
-	}
-	if strings.ContainsAny(v, ",") {
-		return fmt.Errorf("value contains comma")
-	}
-	if k == "default" {
-		if !strings.HasPrefix(v, "go") || !gover.IsValid(v[len("go"):]) {
-			return fmt.Errorf("value for default= must be goVERSION")
-		}
-		if gover.Compare(v[len("go"):], gover.Local()) > 0 {
-			return fmt.Errorf("default=%s too new (toolchain is go%s)", v, gover.Local())
-		}
-		return nil
-	}
-	for _, info := range godebugs.All {
-		if k == info.Name {
-			return nil
-		}
-	}
-	return fmt.Errorf("unknown %s %q", verb, k)
 }

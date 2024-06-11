@@ -14,16 +14,16 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"internal/syscall/unix"
-	"internal/testenv"
 	"internal/testpty"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"strconv"
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 const (
@@ -93,7 +93,7 @@ func TestTerminalSignal(t *testing.T) {
 		// Main test process, run code below.
 		break
 	case "1":
-		runSessionLeader(t, pause)
+		runSessionLeader(pause)
 		panic("unreachable")
 	case "2":
 		runStoppingChild()
@@ -128,22 +128,9 @@ func TestTerminalSignal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var (
-		ctx     = context.Background()
-		cmdArgs = []string{"-test.run=^TestTerminalSignal$"}
-	)
-	if deadline, ok := t.Deadline(); ok {
-		d := time.Until(deadline)
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, d)
-		t.Cleanup(cancel)
-
-		// We run the subprocess with an additional 20% margin to allow it to fail
-		// and clean up gracefully if it times out.
-		cmdArgs = append(cmdArgs, fmt.Sprintf("-test.timeout=%v", d*5/4))
-	}
-
-	cmd := testenv.CommandContext(t, ctx, os.Args[0], cmdArgs...)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestTerminalSignal")
 	cmd.Env = append(os.Environ(), "GO_TEST_TERMINAL_SIGNALS=1")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout // for logging
@@ -229,7 +216,7 @@ func TestTerminalSignal(t *testing.T) {
 }
 
 // GO_TEST_TERMINAL_SIGNALS=1 subprocess above.
-func runSessionLeader(t *testing.T, pause time.Duration) {
+func runSessionLeader(pause time.Duration) {
 	// "Attempts to use tcsetpgrp() from a process which is a
 	// member of a background process group on a fildes associated
 	// with its controlling terminal shall cause the process group
@@ -248,22 +235,10 @@ func runSessionLeader(t *testing.T, pause time.Duration) {
 	pty := os.NewFile(ptyFD, "pty")
 	controlW := os.NewFile(controlFD, "control-pipe")
 
-	var (
-		ctx     = context.Background()
-		cmdArgs = []string{"-test.run=^TestTerminalSignal$"}
-	)
-	if deadline, ok := t.Deadline(); ok {
-		d := time.Until(deadline)
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, d)
-		t.Cleanup(cancel)
-
-		// We run the subprocess with an additional 20% margin to allow it to fail
-		// and clean up gracefully if it times out.
-		cmdArgs = append(cmdArgs, fmt.Sprintf("-test.timeout=%v", d*5/4))
-	}
-
-	cmd := testenv.CommandContext(t, ctx, os.Args[0], cmdArgs...)
+	// Slightly shorter timeout than in the parent.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestTerminalSignal")
 	cmd.Env = append(os.Environ(), "GO_TEST_TERMINAL_SIGNALS=2")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -288,14 +263,15 @@ func runSessionLeader(t *testing.T, pause time.Duration) {
 
 		// Wait for stop.
 		var status syscall.WaitStatus
+		var errno syscall.Errno
 		for {
-			_, err = syscall.Wait4(cmd.Process.Pid, &status, syscall.WUNTRACED, nil)
-			if err != syscall.EINTR {
+			_, _, errno = syscall.Syscall6(syscall.SYS_WAIT4, uintptr(cmd.Process.Pid), uintptr(unsafe.Pointer(&status)), syscall.WUNTRACED, 0, 0, 0)
+			if errno != syscall.EINTR {
 				break
 			}
 		}
-		if err != nil {
-			return fmt.Errorf("error waiting for stop: %w", err)
+		if errno != 0 {
+			return fmt.Errorf("error waiting for stop: %w", errno)
 		}
 
 		if !status.Stopped() {
@@ -304,8 +280,9 @@ func runSessionLeader(t *testing.T, pause time.Duration) {
 
 		// Take TTY.
 		pgrp := int32(syscall.Getpgrp()) // assume that pid_t is int32
-		if err := unix.Tcsetpgrp(ptyFD, pgrp); err != nil {
-			return fmt.Errorf("error setting tty process group: %w", err)
+		_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, ptyFD, syscall.TIOCSPGRP, uintptr(unsafe.Pointer(&pgrp)))
+		if errno != 0 {
+			return fmt.Errorf("error setting tty process group: %w", errno)
 		}
 
 		// Give the kernel time to potentially wake readers and have
@@ -314,8 +291,9 @@ func runSessionLeader(t *testing.T, pause time.Duration) {
 
 		// Give TTY back.
 		pid := int32(cmd.Process.Pid) // assume that pid_t is int32
-		if err := unix.Tcsetpgrp(ptyFD, pid); err != nil {
-			return fmt.Errorf("error setting tty process group back: %w", err)
+		_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, ptyFD, syscall.TIOCSPGRP, uintptr(unsafe.Pointer(&pid)))
+		if errno != 0 {
+			return fmt.Errorf("error setting tty process group back: %w", errno)
 		}
 
 		// Report that we are done and SIGCONT can be sent. Note that

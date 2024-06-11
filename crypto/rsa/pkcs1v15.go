@@ -5,7 +5,6 @@
 package rsa
 
 import (
-	"bytes"
 	"crypto"
 	"crypto/internal/boring"
 	"crypto/internal/randutil"
@@ -17,7 +16,7 @@ import (
 // This file implements encryption and decryption using PKCS #1 v1.5 padding.
 
 // PKCS1v15DecryptOptions is for passing options to PKCS #1 v1.5 decryption using
-// the [crypto.Decrypter] interface.
+// the crypto.Decrypter interface.
 type PKCS1v15DecryptOptions struct {
 	// SessionKeyLen is the length of the session key that is being
 	// decrypted. If not zero, then a padding error during decryption will
@@ -286,11 +285,15 @@ var hashPrefixes = map[crypto.Hash][]byte{
 // messages to signatures and identify the signed messages. As ever,
 // signatures provide authenticity, not confidentiality.
 func SignPKCS1v15(random io.Reader, priv *PrivateKey, hash crypto.Hash, hashed []byte) ([]byte, error) {
-	// pkcs1v15ConstructEM is called before boring.SignRSAPKCS1v15 to return
-	// consistent errors, including ErrMessageTooLong.
-	em, err := pkcs1v15ConstructEM(&priv.PublicKey, hash, hashed)
+	hashLen, prefix, err := pkcs1v15HashInfo(hash, len(hashed))
 	if err != nil {
 		return nil, err
+	}
+
+	tLen := len(prefix) + hashLen
+	k := priv.Size()
+	if k < tLen+11 {
+		return nil, ErrMessageTooLong
 	}
 
 	if boring.Enabled {
@@ -301,37 +304,16 @@ func SignPKCS1v15(random io.Reader, priv *PrivateKey, hash crypto.Hash, hashed [
 		return boring.SignRSAPKCS1v15(bkey, hash, hashed)
 	}
 
-	return decrypt(priv, em, withCheck)
-}
-
-func pkcs1v15ConstructEM(pub *PublicKey, hash crypto.Hash, hashed []byte) ([]byte, error) {
-	// Special case: crypto.Hash(0) is used to indicate that the data is
-	// signed directly.
-	var prefix []byte
-	if hash != 0 {
-		if len(hashed) != hash.Size() {
-			return nil, errors.New("crypto/rsa: input must be hashed message")
-		}
-		var ok bool
-		prefix, ok = hashPrefixes[hash]
-		if !ok {
-			return nil, errors.New("crypto/rsa: unsupported hash function")
-		}
-	}
-
 	// EM = 0x00 || 0x01 || PS || 0x00 || T
-	k := pub.Size()
-	if k < len(prefix)+len(hashed)+2+8+1 {
-		return nil, ErrMessageTooLong
-	}
 	em := make([]byte, k)
 	em[1] = 1
-	for i := 2; i < k-len(prefix)-len(hashed)-1; i++ {
+	for i := 2; i < k-tLen-1; i++ {
 		em[i] = 0xff
 	}
-	copy(em[k-len(prefix)-len(hashed):], prefix)
-	copy(em[k-len(hashed):], hashed)
-	return em, nil
+	copy(em[k-tLen:k-hashLen], prefix)
+	copy(em[k-hashLen:k], hashed)
+
+	return decrypt(priv, em, withCheck)
 }
 
 // VerifyPKCS1v15 verifies an RSA PKCS #1 v1.5 signature.
@@ -339,9 +321,6 @@ func pkcs1v15ConstructEM(pub *PublicKey, hash crypto.Hash, hashed []byte) ([]byt
 // function and sig is the signature. A valid signature is indicated by
 // returning a nil error. If hash is zero then hashed is used directly. This
 // isn't advisable except for interoperability.
-//
-// The inputs are not considered confidential, and may leak through timing side
-// channels, or if an attacker has control of part of the inputs.
 func VerifyPKCS1v15(pub *PublicKey, hash crypto.Hash, hashed []byte, sig []byte) error {
 	if boring.Enabled {
 		bkey, err := boringPublicKey(pub)
@@ -354,10 +333,21 @@ func VerifyPKCS1v15(pub *PublicKey, hash crypto.Hash, hashed []byte, sig []byte)
 		return nil
 	}
 
+	hashLen, prefix, err := pkcs1v15HashInfo(hash, len(hashed))
+	if err != nil {
+		return err
+	}
+
+	tLen := len(prefix) + hashLen
+	k := pub.Size()
+	if k < tLen+11 {
+		return ErrVerification
+	}
+
 	// RFC 8017 Section 8.2.2: If the length of the signature S is not k
 	// octets (where k is the length in octets of the RSA modulus n), output
 	// "invalid signature" and stop.
-	if pub.Size() != len(sig) {
+	if k != len(sig) {
 		return ErrVerification
 	}
 
@@ -365,14 +355,39 @@ func VerifyPKCS1v15(pub *PublicKey, hash crypto.Hash, hashed []byte, sig []byte)
 	if err != nil {
 		return ErrVerification
 	}
+	// EM = 0x00 || 0x01 || PS || 0x00 || T
 
-	expected, err := pkcs1v15ConstructEM(pub, hash, hashed)
-	if err != nil {
-		return ErrVerification
+	ok := subtle.ConstantTimeByteEq(em[0], 0)
+	ok &= subtle.ConstantTimeByteEq(em[1], 1)
+	ok &= subtle.ConstantTimeCompare(em[k-hashLen:k], hashed)
+	ok &= subtle.ConstantTimeCompare(em[k-tLen:k-hashLen], prefix)
+	ok &= subtle.ConstantTimeByteEq(em[k-tLen-1], 0)
+
+	for i := 2; i < k-tLen-1; i++ {
+		ok &= subtle.ConstantTimeByteEq(em[i], 0xff)
 	}
-	if !bytes.Equal(em, expected) {
+
+	if ok != 1 {
 		return ErrVerification
 	}
 
 	return nil
+}
+
+func pkcs1v15HashInfo(hash crypto.Hash, inLen int) (hashLen int, prefix []byte, err error) {
+	// Special case: crypto.Hash(0) is used to indicate that the data is
+	// signed directly.
+	if hash == 0 {
+		return inLen, nil, nil
+	}
+
+	hashLen = hash.Size()
+	if inLen != hashLen {
+		return 0, nil, errors.New("crypto/rsa: input must be hashed message")
+	}
+	prefix, ok := hashPrefixes[hash]
+	if !ok {
+		return 0, nil, errors.New("crypto/rsa: unsupported hash function")
+	}
+	return
 }

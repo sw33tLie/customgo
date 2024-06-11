@@ -10,7 +10,7 @@ package big
 
 import (
 	"fmt"
-	"slices"
+	"sort"
 	"testing"
 )
 
@@ -78,7 +78,7 @@ func (x Bits) norm() Bits {
 			z = append(z, b)
 		}
 	}
-	slices.Sort([]int(z))
+	sort.Ints([]int(z))
 	return z
 }
 

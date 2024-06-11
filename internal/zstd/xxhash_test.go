@@ -42,11 +42,7 @@ func TestLargeXXHash(t *testing.T) {
 		t.Skip("skipping expensive test in short mode")
 	}
 
-	data, err := os.ReadFile("../../testdata/Isaac.Newton-Opticks.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	data := bigData(t)
 	var xh xxhash64
 	xh.reset()
 	i := 0
@@ -67,16 +63,10 @@ func TestLargeXXHash(t *testing.T) {
 	}
 }
 
-func findXxhsum(t testing.TB) string {
-	xxhsum, err := exec.LookPath("xxhsum")
-	if err != nil {
-		t.Skip("skipping because xxhsum not found")
-	}
-	return xxhsum
-}
-
 func FuzzXXHash(f *testing.F) {
-	xxhsum := findXxhsum(f)
+	if _, err := os.Stat("/usr/bin/xxhsum"); err != nil {
+		f.Skip("skipping because /usr/bin/xxhsum does not exist")
+	}
 
 	for _, test := range xxHashTests {
 		f.Add([]byte(test.data))
@@ -90,7 +80,7 @@ func FuzzXXHash(f *testing.F) {
 	f.Add(bigData(f))
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		cmd := exec.Command(xxhsum, "-H64")
+		cmd := exec.Command("/usr/bin/xxhsum", "-H64")
 		cmd.Stdin = bytes.NewReader(b)
 		var hhsumHash bytes.Buffer
 		cmd.Stdout = &hhsumHash

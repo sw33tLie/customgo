@@ -4,10 +4,7 @@
 
 package runtime
 
-import (
-	"internal/abi"
-	"unsafe"
-)
+import "unsafe"
 
 //go:linkname plugin_lastmoduleinit plugin.lastmoduleinit
 func plugin_lastmoduleinit() (path string, syms map[string]any, initTasks []*initTask, errstr string) {
@@ -88,7 +85,7 @@ func plugin_lastmoduleinit() (path string, syms map[string]any, initTasks []*ini
 		(*valp)[0] = unsafe.Pointer(t)
 
 		name := symName.Name()
-		if t.Kind_&abi.KindMask == abi.Func {
+		if t.Kind_&kindMask == kindFunc {
 			name = "." + name
 		}
 		syms[name] = val

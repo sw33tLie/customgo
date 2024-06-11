@@ -29,7 +29,6 @@ const msanenabled = true
 // anyhow for values on the stack. Just ignore msanread when running
 // on the system stack. The other msan functions are fine.
 //
-//go:linkname msanread
 //go:nosplit
 func msanread(addr unsafe.Pointer, sz uintptr) {
 	gp := getg()
@@ -42,19 +41,15 @@ func msanread(addr unsafe.Pointer, sz uintptr) {
 //go:noescape
 func domsanread(addr unsafe.Pointer, sz uintptr)
 
-//go:linkname msanwrite
 //go:noescape
 func msanwrite(addr unsafe.Pointer, sz uintptr)
 
-//go:linkname msanmalloc
 //go:noescape
 func msanmalloc(addr unsafe.Pointer, sz uintptr)
 
-//go:linkname msanfree
 //go:noescape
 func msanfree(addr unsafe.Pointer, sz uintptr)
 
-//go:linkname msanmove
 //go:noescape
 func msanmove(dst, src unsafe.Pointer, sz uintptr)
 

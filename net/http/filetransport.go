@@ -7,7 +7,6 @@ package http
 import (
 	"fmt"
 	"io"
-	"io/fs"
 )
 
 // fileTransport implements RoundTripper for the 'file' protocol.
@@ -15,13 +14,13 @@ type fileTransport struct {
 	fh fileHandler
 }
 
-// NewFileTransport returns a new [RoundTripper], serving the provided
-// [FileSystem]. The returned RoundTripper ignores the URL host in its
+// NewFileTransport returns a new RoundTripper, serving the provided
+// FileSystem. The returned RoundTripper ignores the URL host in its
 // incoming requests, as well as most other properties of the
 // request.
 //
 // The typical use case for NewFileTransport is to register the "file"
-// protocol with a [Transport], as in:
+// protocol with a Transport, as in:
 //
 //	t := &http.Transport{}
 //	t.RegisterProtocol("file", http.NewFileTransport(http.Dir("/")))
@@ -30,24 +29,6 @@ type fileTransport struct {
 //	...
 func NewFileTransport(fs FileSystem) RoundTripper {
 	return fileTransport{fileHandler{fs}}
-}
-
-// NewFileTransportFS returns a new [RoundTripper], serving the provided
-// file system fsys. The returned RoundTripper ignores the URL host in its
-// incoming requests, as well as most other properties of the
-// request.
-//
-// The typical use case for NewFileTransportFS is to register the "file"
-// protocol with a [Transport], as in:
-//
-//	fsys := os.DirFS("/")
-//	t := &http.Transport{}
-//	t.RegisterProtocol("file", http.NewFileTransportFS(fsys))
-//	c := &http.Client{Transport: t}
-//	res, err := c.Get("file:///etc/passwd")
-//	...
-func NewFileTransportFS(fsys fs.FS) RoundTripper {
-	return NewFileTransport(FS(fsys))
 }
 
 func (t fileTransport) RoundTrip(req *Request) (resp *Response, err error) {

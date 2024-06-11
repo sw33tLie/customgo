@@ -6,9 +6,8 @@
 
 package runtime
 
-//go:nosplit
+import "unsafe"
+
 func writeErr(b []byte) {
-	if len(b) > 0 {
-		writeErrData(&b[0], int32(len(b)))
-	}
+	write(2, unsafe.Pointer(&b[0]), int32(len(b)))
 }

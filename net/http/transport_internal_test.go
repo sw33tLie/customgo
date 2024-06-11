@@ -8,7 +8,6 @@ package http
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -37,8 +36,7 @@ func TestTransportPersistConnReadLoopEOF(t *testing.T) {
 	tr := new(Transport)
 	req, _ := NewRequest("GET", "http://"+ln.Addr().String(), nil)
 	req = req.WithT(t)
-	ctx, cancel := context.WithCancelCause(context.Background())
-	treq := &transportRequest{Request: req, ctx: ctx, cancel: cancel}
+	treq := &transportRequest{Request: req}
 	cm := connectMethod{targetScheme: "http", targetAddr: ln.Addr().String()}
 	pc, err := tr.getConn(treq, cm)
 	if err != nil {
@@ -60,8 +58,8 @@ func TestTransportPersistConnReadLoopEOF(t *testing.T) {
 
 	<-pc.closech
 	err = pc.closed
-	if !isNothingWrittenError(err) && !isTransportReadFromServerError(err) && err != errServerClosedIdle {
-		t.Errorf("pc.closed = %#v, %v; want errServerClosedIdle or transportReadFromServerError, or nothingWrittenError", err, err)
+	if !isTransportReadFromServerError(err) && err != errServerClosedIdle {
+		t.Errorf("pc.closed = %#v, %v; want errServerClosedIdle or transportReadFromServerError", err, err)
 	}
 }
 

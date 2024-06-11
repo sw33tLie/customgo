@@ -53,7 +53,7 @@ func makeslicecopy(et *_type, tolen int, fromlen int, from unsafe.Pointer) unsaf
 	}
 
 	var to unsafe.Pointer
-	if !et.Pointers() {
+	if et.PtrBytes == 0 {
 		to = mallocgc(tomem, nil, false)
 		if copymem < tomem {
 			memclrNoHeapPointers(add(to, copymem), tomem-copymem)
@@ -64,11 +64,7 @@ func makeslicecopy(et *_type, tolen int, fromlen int, from unsafe.Pointer) unsaf
 		if copymem > 0 && writeBarrier.enabled {
 			// Only shade the pointers in old.array since we know the destination slice to
 			// only contains nil pointers because it has been cleared during alloc.
-			//
-			// It's safe to pass a type to this function as an optimization because
-			// from and to only ever refer to memory representing whole values of
-			// type et. See the comment on bulkBarrierPreWrite.
-			bulkBarrierPreWriteSrcOnly(uintptr(to), uintptr(from), copymem, et)
+			bulkBarrierPreWriteSrcOnly(uintptr(to), uintptr(from), copymem)
 		}
 	}
 
@@ -89,15 +85,6 @@ func makeslicecopy(et *_type, tolen int, fromlen int, from unsafe.Pointer) unsaf
 	return to
 }
 
-// makeslice should be an internal detail,
-// but widely used packages access it using linkname.
-// Notable members of the hall of shame include:
-//   - github.com/bytedance/sonic
-//
-// Do not remove or change the type signature.
-// See go.dev/issue/67401.
-//
-//go:linkname makeslice
 func makeslice(et *_type, len, cap int) unsafe.Pointer {
 	mem, overflow := math.MulUintptr(et.Size_, uintptr(cap))
 	if overflow || mem > maxAlloc || len < 0 || len > cap {
@@ -128,6 +115,12 @@ func makeslice64(et *_type, len64, cap64 int64) unsafe.Pointer {
 	}
 
 	return makeslice(et, len, cap)
+}
+
+// This is a wrapper over runtime/internal/math.MulUintptr,
+// so the compiler can recognize and treat it as an intrinsic.
+func mulUintptr(a, b uintptr) (uintptr, bool) {
+	return math.MulUintptr(a, b)
 }
 
 // growslice allocates new backing store for a slice.
@@ -161,19 +154,6 @@ func makeslice64(et *_type, len64, cap64 int64) unsafe.Pointer {
 // new length so that the old length is not live (does not need to be
 // spilled/restored) and the new length is returned (also does not need
 // to be spilled/restored).
-//
-// growslice should be an internal detail,
-// but widely used packages access it using linkname.
-// Notable members of the hall of shame include:
-//   - github.com/bytedance/sonic
-//   - github.com/chenzhuoyu/iasm
-//   - github.com/cloudwego/dynamicgo
-//   - github.com/ugorji/go/codec
-//
-// Do not remove or change the type signature.
-// See go.dev/issue/67401.
-//
-//go:linkname growslice
 func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice {
 	oldLen := newLen - num
 	if raceenabled {
@@ -197,7 +177,30 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 		return slice{unsafe.Pointer(&zerobase), newLen, newLen}
 	}
 
-	newcap := nextslicecap(newLen, oldCap)
+	newcap := oldCap
+	doublecap := newcap + newcap
+	if newLen > doublecap {
+		newcap = newLen
+	} else {
+		const threshold = 256
+		if oldCap < threshold {
+			newcap = doublecap
+		} else {
+			// Check 0 < newcap to detect overflow
+			// and prevent an infinite loop.
+			for 0 < newcap && newcap < newLen {
+				// Transition from growing 2x for small slices
+				// to growing 1.25x for large slices. This formula
+				// gives a smooth-ish transition between the two.
+				newcap += (newcap + 3*threshold) / 4
+			}
+			// Set newcap to the requested cap when
+			// the newcap calculation overflowed.
+			if newcap <= 0 {
+				newcap = newLen
+			}
+		}
+	}
 
 	var overflow bool
 	var lenmem, newlenmem, capmem uintptr
@@ -205,18 +208,17 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 	// For 1 we don't need any division/multiplication.
 	// For goarch.PtrSize, compiler will optimize division/multiplication into a shift by a constant.
 	// For powers of 2, use a variable shift.
-	noscan := !et.Pointers()
 	switch {
 	case et.Size_ == 1:
 		lenmem = uintptr(oldLen)
 		newlenmem = uintptr(newLen)
-		capmem = roundupsize(uintptr(newcap), noscan)
+		capmem = roundupsize(uintptr(newcap))
 		overflow = uintptr(newcap) > maxAlloc
 		newcap = int(capmem)
 	case et.Size_ == goarch.PtrSize:
 		lenmem = uintptr(oldLen) * goarch.PtrSize
 		newlenmem = uintptr(newLen) * goarch.PtrSize
-		capmem = roundupsize(uintptr(newcap)*goarch.PtrSize, noscan)
+		capmem = roundupsize(uintptr(newcap) * goarch.PtrSize)
 		overflow = uintptr(newcap) > maxAlloc/goarch.PtrSize
 		newcap = int(capmem / goarch.PtrSize)
 	case isPowerOfTwo(et.Size_):
@@ -229,7 +231,7 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 		}
 		lenmem = uintptr(oldLen) << shift
 		newlenmem = uintptr(newLen) << shift
-		capmem = roundupsize(uintptr(newcap)<<shift, noscan)
+		capmem = roundupsize(uintptr(newcap) << shift)
 		overflow = uintptr(newcap) > (maxAlloc >> shift)
 		newcap = int(capmem >> shift)
 		capmem = uintptr(newcap) << shift
@@ -237,7 +239,7 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 		lenmem = uintptr(oldLen) * et.Size_
 		newlenmem = uintptr(newLen) * et.Size_
 		capmem, overflow = math.MulUintptr(et.Size_, uintptr(newcap))
-		capmem = roundupsize(capmem, noscan)
+		capmem = roundupsize(capmem)
 		newcap = int(capmem / et.Size_)
 		capmem = uintptr(newcap) * et.Size_
 	}
@@ -260,7 +262,7 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 	}
 
 	var p unsafe.Pointer
-	if !et.Pointers() {
+	if et.PtrBytes == 0 {
 		p = mallocgc(capmem, nil, false)
 		// The append() that calls growslice is going to overwrite from oldLen to newLen.
 		// Only clear the part that will not be overwritten.
@@ -273,11 +275,7 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 		if lenmem > 0 && writeBarrier.enabled {
 			// Only shade the pointers in oldPtr since we know the destination slice p
 			// only contains nil pointers because it has been cleared during alloc.
-			//
-			// It's safe to pass a type to this function as an optimization because
-			// from and to only ever refer to memory representing whole values of
-			// type et. See the comment on bulkBarrierPreWrite.
-			bulkBarrierPreWriteSrcOnly(uintptr(p), uintptr(oldPtr), lenmem-et.Size_+et.PtrBytes, et)
+			bulkBarrierPreWriteSrcOnly(uintptr(p), uintptr(oldPtr), lenmem-et.Size_+et.PtrBytes)
 		}
 	}
 	memmove(p, oldPtr, lenmem)
@@ -285,49 +283,6 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 	return slice{p, newLen, newcap}
 }
 
-// nextslicecap computes the next appropriate slice length.
-func nextslicecap(newLen, oldCap int) int {
-	newcap := oldCap
-	doublecap := newcap + newcap
-	if newLen > doublecap {
-		return newLen
-	}
-
-	const threshold = 256
-	if oldCap < threshold {
-		return doublecap
-	}
-	for {
-		// Transition from growing 2x for small slices
-		// to growing 1.25x for large slices. This formula
-		// gives a smooth-ish transition between the two.
-		newcap += (newcap + 3*threshold) >> 2
-
-		// We need to check `newcap >= newLen` and whether `newcap` overflowed.
-		// newLen is guaranteed to be larger than zero, hence
-		// when newcap overflows then `uint(newcap) > uint(newLen)`.
-		// This allows to check for both with the same comparison.
-		if uint(newcap) >= uint(newLen) {
-			break
-		}
-	}
-
-	// Set newcap to the requested cap when
-	// the newcap calculation overflowed.
-	if newcap <= 0 {
-		return newLen
-	}
-	return newcap
-}
-
-// reflect_growslice should be an internal detail,
-// but widely used packages access it using linkname.
-// Notable members of the hall of shame include:
-//   - github.com/cloudwego/dynamicgo
-//
-// Do not remove or change the type signature.
-// See go.dev/issue/67401.
-//
 //go:linkname reflect_growslice reflect.growslice
 func reflect_growslice(et *_type, old slice, num int) slice {
 	// Semantically equivalent to slices.Grow, except that the caller
@@ -338,7 +293,7 @@ func reflect_growslice(et *_type, old slice, num int) slice {
 	// the memory will be overwritten by an append() that called growslice.
 	// Since the caller of reflect_growslice is not append(),
 	// zero out this region before returning the slice to the reflect package.
-	if !et.Pointers() {
+	if et.PtrBytes == 0 {
 		oldcapmem := uintptr(old.cap) * et.Size_
 		newlenmem := uintptr(new.len) * et.Size_
 		memclrNoHeapPointers(add(new.array, oldcapmem), newlenmem-oldcapmem)
@@ -396,6 +351,5 @@ func bytealg_MakeNoZero(len int) []byte {
 	if uintptr(len) > maxAlloc {
 		panicmakeslicelen()
 	}
-	cap := roundupsize(uintptr(len), true)
-	return unsafe.Slice((*byte)(mallocgc(uintptr(cap), nil, false)), cap)[:len]
+	return unsafe.Slice((*byte)(mallocgc(uintptr(len), nil, false)), len)
 }

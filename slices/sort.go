@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:generate go run $GOROOT/src/sort/gen_sort_variants.go -generic
-
 package slices
 
 import (
@@ -117,10 +115,10 @@ func MaxFunc[S ~[]E, E any](x S, cmp func(a, b E) int) E {
 	return m
 }
 
-// BinarySearch searches for target in a sorted slice and returns the earliest
-// position where target is found, or the position where target would appear
-// in the sort order; it also returns a bool saying whether the target is
-// really found in the slice. The slice must be sorted in increasing order.
+// BinarySearch searches for target in a sorted slice and returns the position
+// where target is found, or the position where target would appear in the
+// sort order; it also returns a bool saying whether the target is really found
+// in the slice. The slice must be sorted in increasing order.
 func BinarySearch[S ~[]E, E cmp.Ordered](x S, target E) (int, bool) {
 	// Inlining is faster than calling BinarySearchFunc with a lambda.
 	n := len(x)

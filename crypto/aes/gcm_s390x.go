@@ -2,16 +2,14 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build !purego
-
 package aes
 
 import (
 	"crypto/cipher"
 	"crypto/internal/alias"
 	"crypto/subtle"
+	"encoding/binary"
 	"errors"
-	"internal/byteorder"
 	"internal/cpu"
 )
 
@@ -25,14 +23,14 @@ type gcmCount [16]byte
 
 // inc increments the rightmost 32-bits of the count value by 1.
 func (x *gcmCount) inc() {
-	byteorder.BePutUint32(x[len(x)-4:], byteorder.BeUint32(x[len(x)-4:])+1)
+	binary.BigEndian.PutUint32(x[len(x)-4:], binary.BigEndian.Uint32(x[len(x)-4:])+1)
 }
 
 // gcmLengths writes len0 || len1 as big-endian values to a 16-byte array.
 func gcmLengths(len0, len1 uint64) [16]byte {
 	v := [16]byte{}
-	byteorder.BePutUint64(v[0:], len0)
-	byteorder.BePutUint64(v[8:], len1)
+	binary.BigEndian.PutUint64(v[0:], len0)
+	binary.BigEndian.PutUint64(v[8:], len1)
 	return v
 }
 
@@ -59,7 +57,7 @@ var errOpen = errors.New("cipher: message authentication failed")
 var _ gcmAble = (*aesCipherAsm)(nil)
 
 // NewGCM returns the AES cipher wrapped in Galois Counter Mode. This is only
-// called by [crypto/cipher.NewGCM] via the gcmAble interface.
+// called by crypto/cipher.NewGCM via the gcmAble interface.
 func (c *aesCipherAsm) NewGCM(nonceSize, tagSize int) (cipher.AEAD, error) {
 	var hk gcmHashKey
 	c.Encrypt(hk[:], hk[:])
@@ -202,7 +200,7 @@ func (g *gcmAsm) auth(out, ciphertext, additionalData []byte, tagMask *[gcmTagSi
 	}
 }
 
-// Seal encrypts and authenticates plaintext. See the [cipher.AEAD] interface for
+// Seal encrypts and authenticates plaintext. See the cipher.AEAD interface for
 // details.
 func (g *gcmAsm) Seal(dst, nonce, plaintext, data []byte) []byte {
 	if len(nonce) != g.nonceSize {
@@ -231,7 +229,7 @@ func (g *gcmAsm) Seal(dst, nonce, plaintext, data []byte) []byte {
 	return ret
 }
 
-// Open authenticates and decrypts ciphertext. See the [cipher.AEAD] interface
+// Open authenticates and decrypts ciphertext. See the cipher.AEAD interface
 // for details.
 func (g *gcmAsm) Open(dst, nonce, ciphertext, data []byte) ([]byte, error) {
 	if len(nonce) != g.nonceSize {
@@ -271,7 +269,9 @@ func (g *gcmAsm) Open(dst, nonce, ciphertext, data []byte) ([]byte, error) {
 		// so overwrites dst in the event of a tag mismatch. That
 		// behavior is mimicked here in order to be consistent across
 		// platforms.
-		clear(out)
+		for i := range out {
+			out[i] = 0
+		}
 		return nil, errOpen
 	}
 
@@ -301,7 +301,7 @@ const (
 //go:noescape
 func kmaGCM(fn code, key, dst, src, aad []byte, tag *[16]byte, cnt *gcmCount)
 
-// Seal encrypts and authenticates plaintext. See the [cipher.AEAD] interface for
+// Seal encrypts and authenticates plaintext. See the cipher.AEAD interface for
 // details.
 func (g *gcmKMA) Seal(dst, nonce, plaintext, data []byte) []byte {
 	if len(nonce) != g.nonceSize {
@@ -326,7 +326,7 @@ func (g *gcmKMA) Seal(dst, nonce, plaintext, data []byte) []byte {
 	return ret
 }
 
-// Open authenticates and decrypts ciphertext. See the [cipher.AEAD] interface
+// Open authenticates and decrypts ciphertext. See the cipher.AEAD interface
 // for details.
 func (g *gcmKMA) Open(dst, nonce, ciphertext, data []byte) ([]byte, error) {
 	if len(nonce) != g.nonceSize {
@@ -361,7 +361,9 @@ func (g *gcmKMA) Open(dst, nonce, ciphertext, data []byte) ([]byte, error) {
 		// so overwrites dst in the event of a tag mismatch. That
 		// behavior is mimicked here in order to be consistent across
 		// platforms.
-		clear(out)
+		for i := range out {
+			out[i] = 0
+		}
 		return nil, errOpen
 	}
 

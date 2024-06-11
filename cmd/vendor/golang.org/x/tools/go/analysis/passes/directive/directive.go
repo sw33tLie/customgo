@@ -70,7 +70,11 @@ func checkGoFile(pass *analysis.Pass, f *ast.File) {
 	check := newChecker(pass, pass.Fset.File(f.Package).Name(), f)
 
 	for _, group := range f.Comments {
-		// A //go:build or a //go:debug comment is ignored after the package declaration
+		// A +build comment is ignored after or adjoining the package declaration.
+		if group.End()+1 >= f.Package {
+			check.inHeader = false
+		}
+		// A //go:build comment is ignored after the package declaration
 		// (but adjoining it is OK, in contrast to +build comments).
 		if group.Pos() >= f.Package {
 			check.inHeader = false
@@ -86,7 +90,7 @@ func checkGoFile(pass *analysis.Pass, f *ast.File) {
 func checkOtherFile(pass *analysis.Pass, filename string) error {
 	// We cannot use the Go parser, since is not a Go source file.
 	// Read the raw bytes instead.
-	content, tf, err := analysisutil.ReadFile(pass, filename)
+	content, tf, err := analysisutil.ReadFile(pass.Fset, filename)
 	if err != nil {
 		return err
 	}
@@ -100,7 +104,8 @@ type checker struct {
 	pass     *analysis.Pass
 	filename string
 	file     *ast.File // nil for non-Go file
-	inHeader bool      // in file header (before or adjoining package declaration)
+	inHeader bool      // in file header (before package declaration)
+	inStar   bool      // currently in a /* */ comment
 }
 
 func newChecker(pass *analysis.Pass, filename string, file *ast.File) *checker {
@@ -119,7 +124,7 @@ func (check *checker) nonGoFile(pos token.Pos, fullText string) {
 	for text != "" {
 		offset := len(fullText) - len(text)
 		var line string
-		line, text, _ = strings.Cut(text, "\n")
+		line, text, _ = stringsCut(text, "\n")
 
 		if !inStar && strings.HasPrefix(line, "//") {
 			check.comment(pos+token.Pos(offset), line)
@@ -132,7 +137,7 @@ func (check *checker) nonGoFile(pos token.Pos, fullText string) {
 			line = strings.TrimSpace(line)
 			if inStar {
 				var ok bool
-				_, line, ok = strings.Cut(line, "*/")
+				_, line, ok = stringsCut(line, "*/")
 				if !ok {
 					break
 				}
@@ -193,6 +198,14 @@ func (check *checker) comment(pos token.Pos, line string) {
 			check.pass.Reportf(pos, "//go:debug directive only valid before package declaration")
 		}
 	}
+}
+
+// Go 1.18 strings.Cut.
+func stringsCut(s, sep string) (before, after string, found bool) {
+	if i := strings.Index(s, sep); i >= 0 {
+		return s[:i], s[i+len(sep):], true
+	}
+	return s, "", false
 }
 
 // Go 1.20 strings.CutPrefix.

@@ -8,8 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
+	"reflect"
 	"runtime"
 	"runtime/debug"
 	"slices"
@@ -174,20 +174,17 @@ func (rs *Requirements) String() string {
 // requirements.
 func (rs *Requirements) initVendor(vendorList []module.Version) {
 	rs.graphOnce.Do(func() {
-		roots := MainModules.Versions()
-		if inWorkspaceMode() {
-			// Use rs.rootModules to pull in the go and toolchain roots
-			// from the go.work file and preserve the invariant that all
-			// of rs.rootModules are in mg.g.
-			roots = rs.rootModules
-		}
 		mg := &ModuleGraph{
-			g: mvs.NewGraph(cmpVersion, roots),
+			g: mvs.NewGraph(cmpVersion, MainModules.Versions()),
 		}
 
+		if MainModules.Len() != 1 {
+			panic("There should be exactly one main module in Vendor mode.")
+		}
+		mainModule := MainModules.Versions()[0]
+
 		if rs.pruning == pruned {
-			mainModule := MainModules.mustGetSingleMainModule()
-			// The roots of a single pruned module should already include every module in the
+			// The roots of a pruned module should already include every module in the
 			// vendor list, because the vendored modules are the same as those needed
 			// for graph pruning.
 			//
@@ -218,18 +215,8 @@ func (rs *Requirements) initVendor(vendorList []module.Version) {
 			// graph, but still distinguishes between direct and indirect
 			// dependencies.
 			vendorMod := module.Version{Path: "vendor/modules.txt", Version: ""}
-			if inWorkspaceMode() {
-				for _, m := range MainModules.Versions() {
-					reqs, _ := rootsFromModFile(m, MainModules.ModFile(m), omitToolchainRoot)
-					mg.g.Require(m, append(reqs, vendorMod))
-				}
-				mg.g.Require(vendorMod, vendorList)
-
-			} else {
-				mainModule := MainModules.mustGetSingleMainModule()
-				mg.g.Require(mainModule, append(rs.rootModules, vendorMod))
-				mg.g.Require(vendorMod, vendorList)
-			}
+			mg.g.Require(mainModule, append(rs.rootModules, vendorMod))
+			mg.g.Require(vendorMod, vendorList)
 		}
 
 		rs.graph.Store(&cachedGraph{mg, nil})
@@ -795,13 +782,13 @@ func updateRoots(ctx context.Context, direct map[string]bool, rs *Requirements, 
 	case pruned:
 		return updatePrunedRoots(ctx, direct, rs, pkgs, add, rootsImported)
 	case workspace:
-		return updateWorkspaceRoots(ctx, direct, rs, add)
+		return updateWorkspaceRoots(ctx, rs, add)
 	default:
 		panic(fmt.Sprintf("unsupported pruning mode: %v", rs.pruning))
 	}
 }
 
-func updateWorkspaceRoots(ctx context.Context, direct map[string]bool, rs *Requirements, add []module.Version) (*Requirements, error) {
+func updateWorkspaceRoots(ctx context.Context, rs *Requirements, add []module.Version) (*Requirements, error) {
 	if len(add) != 0 {
 		// add should be empty in workspace mode because workspace mode implies
 		// -mod=readonly, which in turn implies no new requirements. The code path
@@ -812,7 +799,7 @@ func updateWorkspaceRoots(ctx context.Context, direct map[string]bool, rs *Requi
 		// return an error.
 		panic("add is not empty")
 	}
-	return newRequirements(workspace, rs.rootModules, direct), nil
+	return rs, nil
 }
 
 // tidyPrunedRoots returns a minimal set of root requirements that maintains the
@@ -1088,7 +1075,7 @@ func updatePrunedRoots(ctx context.Context, direct map[string]bool, rs *Requirem
 			// relevant dependencies, and we explicitly don't want to pull in
 			// requirements on *irrelevant* requirements that happen to occur in the
 			// go.mod files for these transitive-test-only dependencies. (See the test
-			// in mod_lazy_test_horizon.txt for a concrete example).
+			// in mod_lazy_test_horizon.txt for a concrete example.
 			//
 			// The “goldilocks zone” seems to be to spot-check exactly the same
 			// modules that we promote to explicit roots: namely, those that provide
@@ -1228,7 +1215,7 @@ func updatePrunedRoots(ctx context.Context, direct map[string]bool, rs *Requirem
 		}
 	}
 
-	if rs.pruning == pruned && slices.Equal(roots, rs.rootModules) && maps.Equal(direct, rs.direct) {
+	if rs.pruning == pruned && reflect.DeepEqual(roots, rs.rootModules) && reflect.DeepEqual(direct, rs.direct) {
 		// The root set is unchanged and rs was already pruned, so keep rs to
 		// preserve its cached ModuleGraph (if any).
 		return rs, nil
@@ -1469,7 +1456,7 @@ func updateUnprunedRoots(ctx context.Context, direct map[string]bool, rs *Requir
 	if MainModules.Len() > 1 {
 		gover.ModSort(roots)
 	}
-	if rs.pruning == unpruned && slices.Equal(roots, rs.rootModules) && maps.Equal(direct, rs.direct) {
+	if rs.pruning == unpruned && reflect.DeepEqual(roots, rs.rootModules) && reflect.DeepEqual(direct, rs.direct) {
 		// The root set is unchanged and rs was already unpruned, so keep rs to
 		// preserve its cached ModuleGraph (if any).
 		return rs, nil

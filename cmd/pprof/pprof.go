@@ -12,7 +12,6 @@ package main
 import (
 	"crypto/tls"
 	"debug/dwarf"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,23 +24,18 @@ import (
 	"time"
 
 	"cmd/internal/objfile"
-	"cmd/internal/telemetry"
 
 	"github.com/google/pprof/driver"
 	"github.com/google/pprof/profile"
 )
 
 func main() {
-	telemetry.Start()
-	telemetry.Inc("pprof/invocations")
 	options := &driver.Options{
 		Fetch: new(fetcher),
 		Obj:   new(objTool),
 		UI:    newUI(),
 	}
-	err := driver.PProf(options)
-	telemetry.CountFlags("pprof/flag:", *flag.CommandLine) // pprof will use the flag package as its default
-	if err != nil {
+	if err := driver.PProf(options); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(2)
 	}
@@ -51,16 +45,6 @@ type fetcher struct {
 }
 
 func (f *fetcher) Fetch(src string, duration, timeout time.Duration) (*profile.Profile, string, error) {
-	// Firstly, determine if the src is an existing file on the disk.
-	// If it is a file, let regular pprof open it.
-	// If it is not a file, when the src contains `:`
-	// (e.g. mem_2023-11-02_03:55:24 or abc:123/mem_2023-11-02_03:55:24),
-	// url.Parse will recognize it as a link and ultimately report an error,
-	// similar to `abc:123/mem_2023-11-02_03:55:24:
-	// Get "http://abc:123/mem_2023-11-02_03:55:24": dial tcp: lookup abc: no such host`
-	if _, openErr := os.Stat(src); openErr == nil {
-		return nil, "", nil
-	}
 	sourceURL, timeout := adjustURL(src, duration, timeout)
 	if sourceURL == "" {
 		// Could not recognize URL, let regular pprof attempt to fetch the profile (eg. from a file)
@@ -100,8 +84,8 @@ func getProfile(source string, timeout time.Duration) (*profile.Profile, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
 		return nil, statusCodeError(resp)
 	}
 	return profile.Parse(resp.Body)

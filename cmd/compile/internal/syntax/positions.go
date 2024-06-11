@@ -36,8 +36,7 @@ func StartPos(n Node) Pos {
 				continue
 			}
 			return n.Pos()
-		case *KeyValueExpr:
-			m = n.Key
+		// case *KeyValueExpr:
 		// case *FuncLit:
 		// case *ParenExpr:
 		case *SelectorExpr:

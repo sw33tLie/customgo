@@ -12,14 +12,10 @@ import (
 
 func (file *File) readdir(n int, mode readdirMode) (names []string, dirents []DirEntry, infos []FileInfo, err error) {
 	// If this file has no dirinfo, create one.
-	d := file.dirinfo.Load()
-	if d == nil {
-		d = new(dirInfo)
-		file.dirinfo.Store(d)
+	if file.dirinfo == nil {
+		file.dirinfo = new(dirInfo)
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
+	d := file.dirinfo
 	size := n
 	if size <= 0 {
 		size = 100

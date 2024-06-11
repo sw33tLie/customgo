@@ -40,19 +40,13 @@ func Less[T Ordered](x, y T) bool {
 func Compare[T Ordered](x, y T) int {
 	xNaN := isNaN(x)
 	yNaN := isNaN(y)
-	if xNaN {
-		if yNaN {
-			return 0
-		}
+	if xNaN && yNaN {
+		return 0
+	}
+	if xNaN || x < y {
 		return -1
 	}
-	if yNaN {
-		return +1
-	}
-	if x < y {
-		return -1
-	}
-	if x > y {
+	if yNaN || x > y {
 		return +1
 	}
 	return 0
@@ -62,16 +56,4 @@ func Compare[T Ordered](x, y T) int {
 // This will always return false if T is not floating-point.
 func isNaN[T Ordered](x T) bool {
 	return x != x
-}
-
-// Or returns the first of its arguments that is not equal to the zero value.
-// If no argument is non-zero, it returns the zero value.
-func Or[T comparable](vals ...T) T {
-	var zero T
-	for _, val := range vals {
-		if val != zero {
-			return val
-		}
-	}
-	return zero
 }

@@ -181,8 +181,6 @@ func init() {
 }
 
 func runGenerate(ctx context.Context, cmd *base.Command, args []string) {
-	modload.InitWorkfile()
-
 	if generateRunFlag != "" {
 		var err error
 		generateRunRE, err = regexp.Compile(generateRunFlag)
@@ -212,13 +210,6 @@ func runGenerate(ctx context.Context, cmd *base.Command, args []string) {
 			continue
 		}
 
-		if pkg.Error != nil && len(pkg.InternalAllGoFiles()) == 0 {
-			// A directory only contains a Go package if it has at least
-			// one .go source file, so the fact that there are no files
-			// implies that the package couldn't be found.
-			base.Errorf("%v", pkg.Error)
-		}
-
 		for _, file := range pkg.InternalGoFiles() {
 			if !generate(file) {
 				break
@@ -231,7 +222,6 @@ func runGenerate(ctx context.Context, cmd *base.Command, args []string) {
 			}
 		}
 	}
-	base.ExitIfErrors()
 }
 
 // generate runs the generation directives for a single file.
@@ -489,7 +479,7 @@ func (g *Generator) exec(words []string) {
 		// intends to use the same 'go' as 'go generate' itself.
 		// Prefer to resolve the binary from GOROOT/bin, and for consistency
 		// prefer to resolve any other commands there too.
-		gorootBinPath, err := cfg.LookPath(filepath.Join(cfg.GOROOTbin, path))
+		gorootBinPath, err := exec.LookPath(filepath.Join(cfg.GOROOTbin, path))
 		if err == nil {
 			path = gorootBinPath
 		}

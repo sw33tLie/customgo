@@ -42,9 +42,8 @@
 package dag
 
 import (
-	"cmp"
 	"fmt"
-	"slices"
+	"sort"
 	"strings"
 )
 
@@ -85,9 +84,7 @@ func (g *Graph) Edges(from string) []string {
 	for k := range g.edges[from] {
 		edges = append(edges, k)
 	}
-	slices.SortFunc(edges, func(a, b string) int {
-		return cmp.Compare(g.byLabel[a], g.byLabel[b])
-	})
+	sort.Slice(edges, func(i, j int) bool { return g.byLabel[edges[i]] < g.byLabel[edges[j]] })
 	return edges
 }
 

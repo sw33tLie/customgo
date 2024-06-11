@@ -137,9 +137,10 @@ func (check *Checker) reportInstanceLoop(v int) {
 
 	// TODO(mdempsky): Pivot stack so we report the cycle from the top?
 
-	err := check.newError(InvalidInstanceCycle)
+	var err error_
+	err.code = InvalidInstanceCycle
 	obj0 := check.mono.vertices[v].obj
-	err.addf(obj0, "instantiation cycle:")
+	err.errorf(obj0, "instantiation cycle:")
 
 	qf := RelativeTo(check.pkg)
 	for _, v := range stack {
@@ -150,12 +151,12 @@ func (check *Checker) reportInstanceLoop(v int) {
 		default:
 			panic("unexpected type")
 		case *Named:
-			err.addf(atPos(edge.pos), "%s implicitly parameterized by %s", obj.Name(), TypeString(edge.typ, qf)) // secondary error, \t indented
+			err.errorf(edge.pos, "%s implicitly parameterized by %s", obj.Name(), TypeString(edge.typ, qf)) // secondary error, \t indented
 		case *TypeParam:
-			err.addf(atPos(edge.pos), "%s instantiated as %s", obj.Name(), TypeString(edge.typ, qf)) // secondary error, \t indented
+			err.errorf(edge.pos, "%s instantiated as %s", obj.Name(), TypeString(edge.typ, qf)) // secondary error, \t indented
 		}
 	}
-	err.report()
+	check.report(&err)
 }
 
 // recordCanon records that tpar is the canonical type parameter
@@ -173,7 +174,7 @@ func (w *monoGraph) recordInstance(pkg *Package, pos syntax.Pos, tparams []*Type
 	for i, tpar := range tparams {
 		pos := pos
 		if i < len(xlist) {
-			pos = startPos(xlist[i])
+			pos = syntax.StartPos(xlist[i])
 		}
 		w.assign(pkg, pos, tpar, targs[i])
 	}
@@ -207,7 +208,7 @@ func (w *monoGraph) assign(pkg *Package, pos syntax.Pos, tpar *TypeParam, targ T
 	// type parameters.
 	var do func(typ Type)
 	do = func(typ Type) {
-		switch typ := Unalias(typ).(type) {
+		switch typ := typ.(type) {
 		default:
 			panic("unexpected type")
 

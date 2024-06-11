@@ -561,7 +561,7 @@ func (d *pcDeck) tryAdd(pc uintptr, frames []runtime.Frame, symbolizeResult symb
 		if last.Entry != newFrame.Entry { // newFrame is for a different function.
 			return false
 		}
-		if runtime_FrameSymbolName(&last) == runtime_FrameSymbolName(&newFrame) { // maybe recursion.
+		if last.Function == newFrame.Function { // maybe recursion.
 			return false
 		}
 	}
@@ -611,14 +611,13 @@ func (b *profileBuilder) emitLocation() uint64 {
 	b.pb.uint64Opt(tagLocation_Address, uint64(firstFrame.PC))
 	for _, frame := range b.deck.frames {
 		// Write out each line in frame expansion.
-		funcName := runtime_FrameSymbolName(&frame)
-		funcID := uint64(b.funcs[funcName])
+		funcID := uint64(b.funcs[frame.Function])
 		if funcID == 0 {
 			funcID = uint64(len(b.funcs)) + 1
-			b.funcs[funcName] = int(funcID)
+			b.funcs[frame.Function] = int(funcID)
 			newFuncs = append(newFuncs, newFunc{
 				id:        funcID,
-				name:      funcName,
+				name:      runtime_FrameSymbolName(&frame),
 				file:      frame.File,
 				startLine: int64(runtime_FrameStartLine(&frame)),
 			})

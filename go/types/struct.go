@@ -82,7 +82,7 @@ func (check *Checker) structType(styp *Struct, e *ast.StructType) {
 	// current field typ and tag
 	var typ Type
 	var tag string
-	add := func(ident *ast.Ident, embedded bool) {
+	add := func(ident *ast.Ident, embedded bool, pos token.Pos) {
 		if tag != "" && tags == nil {
 			tags = make([]string, len(fields))
 		}
@@ -90,7 +90,6 @@ func (check *Checker) structType(styp *Struct, e *ast.StructType) {
 			tags = append(tags, tag)
 		}
 
-		pos := ident.Pos()
 		name := ident.Name
 		fld := NewField(pos, check.pkg, name, typ, embedded)
 		// spec: "Within a struct, non-blank field names must be unique."
@@ -104,10 +103,10 @@ func (check *Checker) structType(styp *Struct, e *ast.StructType) {
 	// fields with errors; this keeps the number of struct fields in sync
 	// with the source as long as the fields are _ or have different names
 	// (go.dev/issue/25627).
-	addInvalid := func(ident *ast.Ident) {
+	addInvalid := func(ident *ast.Ident, pos token.Pos) {
 		typ = Typ[Invalid]
 		tag = ""
-		add(ident, true)
+		add(ident, true, pos)
 	}
 
 	for _, f := range list.List {
@@ -116,7 +115,7 @@ func (check *Checker) structType(styp *Struct, e *ast.StructType) {
 		if len(f.Names) > 0 {
 			// named fields
 			for _, name := range f.Names {
-				add(name, false)
+				add(name, false, name.Pos())
 			}
 		} else {
 			// embedded field
@@ -129,10 +128,10 @@ func (check *Checker) structType(styp *Struct, e *ast.StructType) {
 				check.errorf(f.Type, InvalidSyntaxTree, "embedded field type %s has no name", f.Type)
 				name = ast.NewIdent("_")
 				name.NamePos = pos
-				addInvalid(name)
+				addInvalid(name, pos)
 				continue
 			}
-			add(name, true) // struct{p.T} field has position of T
+			add(name, true, name.Pos()) // struct{p.T} field has position of T
 
 			// Because we have a name, typ must be of the form T or *T, where T is the name
 			// of a (named or alias) type, and t (= deref(typ)) must be the type of T.
@@ -147,7 +146,7 @@ func (check *Checker) structType(styp *Struct, e *ast.StructType) {
 				t, isPtr := deref(embeddedTyp)
 				switch u := under(t).(type) {
 				case *Basic:
-					if !isValid(t) {
+					if t == Typ[Invalid] {
 						// error was reported before
 						return
 					}
@@ -199,10 +198,8 @@ func embeddedFieldIdent(e ast.Expr) *ast.Ident {
 
 func (check *Checker) declareInSet(oset *objset, pos token.Pos, obj Object) bool {
 	if alt := oset.insert(obj); alt != nil {
-		err := check.newError(DuplicateDecl)
-		err.addf(atPos(pos), "%s redeclared", obj.Name())
-		err.addAltDecl(alt)
-		err.report()
+		check.errorf(atPos(pos), DuplicateDecl, "%s redeclared", obj.Name())
+		check.reportAltDecl(alt)
 		return false
 	}
 	return true

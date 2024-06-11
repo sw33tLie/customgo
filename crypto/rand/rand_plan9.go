@@ -9,7 +9,7 @@ package rand
 
 import (
 	"crypto/aes"
-	"internal/byteorder"
+	"encoding/binary"
 	"io"
 	"os"
 	"sync"
@@ -44,7 +44,6 @@ func (r *reader) Read(b []byte) (n int, err error) {
 			r.seedErr = err
 			return
 		}
-		defer entropy.Close()
 		_, r.seedErr = io.ReadFull(entropy, r.key[:])
 	})
 	if r.seedErr != nil {
@@ -66,7 +65,7 @@ func (r *reader) Read(b []byte) (n int, err error) {
 		if counter == 0 {
 			panic("crypto/rand counter wrapped")
 		}
-		byteorder.LePutUint64(block[:], counter)
+		binary.LittleEndian.PutUint64(block[:], counter)
 	}
 	blockCipher.Encrypt(r.key[:aes.BlockSize], block[:])
 	inc()

@@ -6,9 +6,8 @@ package runtime
 
 import (
 	"internal/abi"
-	"internal/chacha8rand"
 	"internal/goarch"
-	"internal/runtime/atomic"
+	"runtime/internal/atomic"
 	"runtime/internal/sys"
 	"unsafe"
 )
@@ -343,7 +342,7 @@ type gobuf struct {
 	bp   uintptr // for framepointer-enabled architectures
 }
 
-// sudog (pseudo-g) represents a g in a wait list, such as for sending/receiving
+// sudog represents a g in a wait list, such as for sending/receiving
 // on a channel.
 //
 // sudog is necessary because the g ↔ synchronization object relation
@@ -383,13 +382,6 @@ type sudog struct {
 	// because c was closed.
 	success bool
 
-	// waiters is a count of semaRoot waiting list other than head of list,
-	// clamped to a uint16 to fit in unused space.
-	// Only meaningful at the head of the list.
-	// (If we wanted to be overly clever, we could store a high 16 bits
-	// in the second entry in the list.)
-	waiters uint16
-
 	parent   *sudog // semaRoot binary tree
 	waitlink *sudog // g.waiting list or semaRoot
 	waittail *sudog // semaRoot
@@ -424,7 +416,7 @@ type g struct {
 	// stack describes the actual stack memory: [stack.lo, stack.hi).
 	// stackguard0 is the stack pointer compared in the Go stack growth prologue.
 	// It is stack.lo+StackGuard normally, but can be StackPreempt to trigger a preemption.
-	// stackguard1 is the stack pointer compared in the //go:systemstack stack growth prologue.
+	// stackguard1 is the stack pointer compared in the C stack growth prologue.
 	// It is stack.lo+StackGuard on g0 and gsignal stacks.
 	// It is ~0 on other goroutine stacks, to trigger a call to morestackc (and crash).
 	stack       stack   // offset known to runtime/cgo
@@ -437,12 +429,11 @@ type g struct {
 	sched     gobuf
 	syscallsp uintptr // if status==Gsyscall, syscallsp = sched.sp to use during gc
 	syscallpc uintptr // if status==Gsyscall, syscallpc = sched.pc to use during gc
-	syscallbp uintptr // if status==Gsyscall, syscallbp = sched.bp to use in fpTraceback
 	stktopsp  uintptr // expected sp at top of stack, to check in traceback
 	// param is a generic pointer parameter field used to pass
 	// values in particular contexts where other storage for the
 	// parameter would be difficult to find. It is currently used
-	// in four ways:
+	// in three ways:
 	// 1. When a channel operation wakes up a blocked goroutine, it sets param to
 	//    point to the sudog of the completed blocking operation.
 	// 2. By gcAssistAlloc1 to signal back to its caller that the goroutine completed
@@ -450,8 +441,6 @@ type g struct {
 	//    stack may have moved in the meantime.
 	// 3. By debugCallWrap to pass parameters to a new goroutine because allocating a
 	//    closure in the runtime is forbidden.
-	// 4. When a panic is recovered and control returns to the respective frame,
-	//    param may point to a savedOpenDeferState.
 	param        unsafe.Pointer
 	atomicstatus atomic.Uint32
 	stackLock    uint32 // sigprof/scang lock; TODO: fold in to atomicstatus
@@ -481,13 +470,8 @@ type g struct {
 	// park on a chansend or chanrecv. Used to signal an unsafe point
 	// for stack shrinking.
 	parkingOnChan atomic.Bool
-	// inMarkAssist indicates whether the goroutine is in mark assist.
-	// Used by the execution tracer.
-	inMarkAssist bool
-	coroexit     bool // argument to coroswitch_m
 
 	raceignore    int8  // ignore race detection events
-	nocgocallback bool  // whether disable callback from C
 	tracking      bool  // whether we're tracking this G for sched latency statistics
 	trackingSeq   uint8 // used to decide whether to track this G
 	trackingStamp int64 // timestamp of when the G last started being tracked
@@ -507,14 +491,11 @@ type g struct {
 	cgoCtxt       []uintptr      // cgo traceback context
 	labels        unsafe.Pointer // profiler labels
 	timer         *timer         // cached timer for time.Sleep
-	sleepWhen     int64          // when to sleep until
 	selectDone    atomic.Uint32  // are we participating in a select and did someone win the race?
 
 	// goroutineProfiled indicates the status of this goroutine's stack for the
 	// current in-progress goroutine profile
 	goroutineProfiled goroutineProfileStateHolder
-
-	coroarg *coro // argument during coroutine transfers
 
 	// Per-G tracer state.
 	trace gTraceState
@@ -581,8 +562,8 @@ type m struct {
 	incgo         bool          // m is executing a cgo call
 	isextra       bool          // m is an extra m
 	isExtraInC    bool          // m is an extra m that is not executing Go code
-	isExtraInSig  bool          // m is an extra m in a signal handler
 	freeWait      atomic.Uint32 // Whether it is safe to free g0 and delete m (one of freeMRef, freeMStack, freeMWait)
+	fastrand      uint64
 	needextram    bool
 	traceback     uint8
 	ncgocall      uint64        // number of cgo calls in total
@@ -593,20 +574,17 @@ type m struct {
 	alllink       *m // on allm
 	schedlink     muintptr
 	lockedg       guintptr
-	createstack   [32]uintptr // stack that created this thread, it's used for StackRecord.Stack0, so it must align with it.
+	createstack   [32]uintptr // stack that created this thread.
 	lockedExt     uint32      // tracking for external LockOSThread
 	lockedInt     uint32      // tracking for internal lockOSThread
 	nextwaitm     muintptr    // next m waiting for lock
-
-	mLockProfile mLockProfile // fields relating to runtime.lock contention
-	profStack    []uintptr    // used for memory/block/mutex stack traces
 
 	// wait* are used to carry arguments from gopark into park_m, because
 	// there's no stack to put them on. That is their sole purpose.
 	waitunlockf          func(*g, unsafe.Pointer) bool
 	waitlock             unsafe.Pointer
-	waitTraceSkip        int
 	waitTraceBlockReason traceBlockReason
+	waitTraceSkip        int
 
 	syscalltick uint32
 	freelink    *m // on sched.freem
@@ -614,11 +592,11 @@ type m struct {
 
 	// these are here because they are too large to be on the stack
 	// of low-level NOSPLIT functions.
-	libcall    libcall
-	libcallpc  uintptr // for cpu profiler
-	libcallsp  uintptr
-	libcallg   guintptr
-	winsyscall winlibcall // stores syscall parameters on windows
+	libcall   libcall
+	libcallpc uintptr // for cpu profiler
+	libcallsp uintptr
+	libcallg  guintptr
+	syscall   libcall // stores syscall parameters on windows
 
 	vdsoSP uintptr // SP for traceback while in VDSO call (0 if not in call)
 	vdsoPC uintptr // PC for traceback while in VDSO call
@@ -631,15 +609,9 @@ type m struct {
 	// Whether this is a pending preemption signal on this M.
 	signalPending atomic.Uint32
 
-	// pcvalue lookup cache
-	pcvalueCache pcvalueCache
-
 	dlogPerM
 
 	mOS
-
-	chacha8   chacha8rand.State
-	cheaprand uint64
 
 	// Up to 10 locks held by this m, maintained by the lock ranking code.
 	locksHeldLen int
@@ -711,6 +683,16 @@ type p struct {
 
 	palloc persistentAlloc // per-P to avoid mutex
 
+	// The when field of the first entry on the timer heap.
+	// This is 0 if the timer heap is empty.
+	timer0When atomic.Int64
+
+	// The earliest known nextwhen field of a timer with
+	// timerModifiedEarlier status. Because the timer may have been
+	// modified again, there need not be any timer with this value.
+	// This is 0 if there are no timerModifiedEarlier timers.
+	timerModifiedEarliest atomic.Int64
+
 	// Per-P GC state
 	gcAssistTime         int64 // Nanoseconds in assistAlloc
 	gcFractionalMarkTime int64 // Nanoseconds in fractional mark worker (atomic)
@@ -744,8 +726,23 @@ type p struct {
 	// writing any stats. Its value is even when not, odd when it is.
 	statsSeq atomic.Uint32
 
-	// Timer heap.
-	timers timers
+	// Lock for timers. We normally access the timers while running
+	// on this P, but the scheduler can also do it from a different P.
+	timersLock mutex
+
+	// Actions to take at some time. This is used to implement the
+	// standard library's time package.
+	// Must hold timersLock to access.
+	timers []*timer
+
+	// Number of timers in P's heap.
+	numTimers atomic.Uint32
+
+	// Number of timerDeleted timers in P's heap.
+	deletedTimers atomic.Uint32
+
+	// Race context used while executing timer functions.
+	timerRaceCtx uintptr
 
 	// maxStackScanDelta accumulates the amount of stack space held by
 	// live goroutines (i.e. those eligible for stack scanning).
@@ -765,8 +762,10 @@ type p struct {
 	// scheduler ASAP (regardless of what G is running on it).
 	preempt bool
 
-	// gcStopTime is the nanotime timestamp that this P last entered _Pgcstop.
-	gcStopTime int64
+	// pageTraceBuf is a buffer for writing out page allocation/free/scavenge traces.
+	//
+	// Used only if GOEXPERIMENT=pagetrace.
+	pageTraceBuf pageTraceBuf
 
 	// Padding is no longer needed. False sharing is now not a worry because p is large enough
 	// that its size class is an integer multiple of the cache line size (for any of our architectures).
@@ -839,7 +838,7 @@ type schedt struct {
 	sysmonwait atomic.Bool
 	sysmonnote note
 
-	// safePointFn should be called on each P at the next GC
+	// safepointFn should be called on each P at the next GC
 	// safepoint if p.runSafePointFn is set.
 	safePointFn   func(*p)
 	safePointWait int32
@@ -869,27 +868,6 @@ type schedt struct {
 	// totalMutexWaitTime is the sum of time goroutines have spent in _Gwaiting
 	// with a waitreason of the form waitReasonSync{RW,}Mutex{R,}Lock.
 	totalMutexWaitTime atomic.Int64
-
-	// stwStoppingTimeGC/Other are distributions of stop-the-world stopping
-	// latencies, defined as the time taken by stopTheWorldWithSema to get
-	// all Ps to stop. stwStoppingTimeGC covers all GC-related STWs,
-	// stwStoppingTimeOther covers the others.
-	stwStoppingTimeGC    timeHistogram
-	stwStoppingTimeOther timeHistogram
-
-	// stwTotalTimeGC/Other are distributions of stop-the-world total
-	// latencies, defined as the total time from stopTheWorldWithSema to
-	// startTheWorldWithSema. This is a superset of
-	// stwStoppingTimeGC/Other. stwTotalTimeGC covers all GC-related STWs,
-	// stwTotalTimeOther covers the others.
-	stwTotalTimeGC    timeHistogram
-	stwTotalTimeOther timeHistogram
-
-	// totalRuntimeLockWaitTime (plus the value of lockWaitTime on each M in
-	// allm) is the sum of time goroutines have spent in _Grunnable and with an
-	// M, but waiting for locks within the runtime. This field stores the value
-	// for Ms that have exited.
-	totalRuntimeLockWaitTime atomic.Int64
 }
 
 // Values for the flags field of a sigTabT.
@@ -966,7 +944,17 @@ type funcinl struct {
 	startLine int32
 }
 
-type itab = abi.ITab
+// layout of Itab known to compilers
+// allocated in non-garbage-collected memory
+// Needs to be in sync with
+// ../cmd/compile/internal/reflectdata/reflect.go:/^func.WriteTabs.
+type itab struct {
+	inter *interfacetype
+	_type *_type
+	hash  uint32 // copy of _type.hash. Used for type switches.
+	_     [4]byte
+	fun   [1]uintptr // variable sized. fun[0]==0 means _type does not implement inter.
+}
 
 // Lock-free stack node.
 // Also known to export_test.go.
@@ -981,6 +969,27 @@ type forcegcstate struct {
 	idle atomic.Bool
 }
 
+// extendRandom extends the random numbers in r[:n] to the whole slice r.
+// Treats n<0 as n==0.
+func extendRandom(r []byte, n int) {
+	if n < 0 {
+		n = 0
+	}
+	for n < len(r) {
+		// Extend random bits using hash function & time seed
+		w := n
+		if w > 16 {
+			w = 16
+		}
+		h := memhash(unsafe.Pointer(&r[n-w]), uintptr(nanotime()), uintptr(w))
+		for i := 0; i < goarch.PtrSize && n < len(r); i++ {
+			r[n] = byte(h)
+			n++
+			h >>= 8
+		}
+	}
+}
+
 // A _defer holds an entry on the list of deferred calls.
 // If you add a field here, add code to clear it in deferProcStack.
 // This struct must match the code in cmd/compile/internal/ssagen/ssa.go:deferstruct
@@ -990,16 +999,29 @@ type forcegcstate struct {
 // initialize them are not required. All defers must be manually scanned,
 // and for heap defers, marked.
 type _defer struct {
-	heap      bool
-	rangefunc bool    // true for rangefunc list
+	started bool
+	heap    bool
+	// openDefer indicates that this _defer is for a frame with open-coded
+	// defers. We have only one defer record for the entire frame (which may
+	// currently have 0, 1, or more defers active).
+	openDefer bool
 	sp        uintptr // sp at time of defer
 	pc        uintptr // pc at time of defer
 	fn        func()  // can be nil for open-coded defers
+	_panic    *_panic // panic that is running defer
 	link      *_defer // next defer on G; can point to either heap or stack!
 
-	// If rangefunc is true, *head is the head of the atomic linked list
-	// during a range-over-func execution.
-	head *atomic.Pointer[_defer]
+	// If openDefer is true, the fields below record values about the stack
+	// frame and associated function that has the open-coded defer(s). sp
+	// above will be the sp for the frame, and pc will be address of the
+	// deferreturn call in the function.
+	fd   unsafe.Pointer // funcdata for the function associated with the frame
+	varp uintptr        // value of varp for the stack frame
+	// framepc is the current pc associated with the stack frame. Together,
+	// with sp above (which is the sp associated with the stack frame),
+	// framepc/sp can be used as pc/sp pair to continue a stack trace via
+	// gentraceback().
+	framepc uintptr
 }
 
 // A _panic holds information about an active panic.
@@ -1011,39 +1033,14 @@ type _defer struct {
 // _panic values only live on the stack, regular stack pointer
 // adjustment takes care of them.
 type _panic struct {
-	argp unsafe.Pointer // pointer to arguments of deferred call run during panic; cannot move - known to liblink
-	arg  any            // argument to panic
-	link *_panic        // link to earlier panic
-
-	// startPC and startSP track where _panic.start was called.
-	startPC uintptr
-	startSP unsafe.Pointer
-
-	// The current stack frame that we're running deferred calls for.
-	sp unsafe.Pointer
-	lr uintptr
-	fp unsafe.Pointer
-
-	// retpc stores the PC where the panic should jump back to, if the
-	// function last returned by _panic.next() recovers the panic.
-	retpc uintptr
-
-	// Extra state for handling open-coded defers.
-	deferBitsPtr *uint8
-	slotsPtr     unsafe.Pointer
-
-	recovered   bool // whether this panic has been recovered
-	goexit      bool
-	deferreturn bool
-}
-
-// savedOpenDeferState tracks the extra state from _panic that's
-// necessary for deferreturn to pick up where gopanic left off,
-// without needing to unwind the stack.
-type savedOpenDeferState struct {
-	retpc           uintptr
-	deferBitsOffset uintptr
-	slotsOffset     uintptr
+	argp      unsafe.Pointer // pointer to arguments of deferred call run during panic; cannot move - known to liblink
+	arg       any            // argument to panic
+	link      *_panic        // link to earlier panic
+	pc        uintptr        // where to return to in runtime if this panic is bypassed
+	sp        unsafe.Pointer // where to return to in runtime if this panic is bypassed
+	recovered bool           // whether this panic is over
+	aborted   bool           // the panic was aborted
+	goexit    bool
 }
 
 // ancestorInfo records details of where a goroutine was started.
@@ -1090,11 +1087,6 @@ const (
 	waitReasonDebugCall                               // "debug call"
 	waitReasonGCMarkTermination                       // "GC mark termination"
 	waitReasonStoppingTheWorld                        // "stopping the world"
-	waitReasonFlushProcCaches                         // "flushing proc caches"
-	waitReasonTraceGoroutineStatus                    // "trace goroutine status"
-	waitReasonTraceProcStatus                         // "trace proc status"
-	waitReasonPageTraceFlush                          // "page trace flush"
-	waitReasonCoroutine                               // "coroutine"
 )
 
 var waitReasonStrings = [...]string{
@@ -1130,11 +1122,6 @@ var waitReasonStrings = [...]string{
 	waitReasonDebugCall:             "debug call",
 	waitReasonGCMarkTermination:     "GC mark termination",
 	waitReasonStoppingTheWorld:      "stopping the world",
-	waitReasonFlushProcCaches:       "flushing proc caches",
-	waitReasonTraceGoroutineStatus:  "trace goroutine status",
-	waitReasonTraceProcStatus:       "trace proc status",
-	waitReasonPageTraceFlush:        "page trace flush",
-	waitReasonCoroutine:             "coroutine",
 }
 
 func (w waitReason) String() string {
@@ -1150,29 +1137,6 @@ func (w waitReason) isMutexWait() bool {
 		w == waitReasonSyncRWMutexLock
 }
 
-func (w waitReason) isWaitingForGC() bool {
-	return isWaitingForGC[w]
-}
-
-// isWaitingForGC indicates that a goroutine is only entering _Gwaiting and
-// setting a waitReason because it needs to be able to let the GC take ownership
-// of its stack. The G is always actually executing on the system stack, in
-// these cases.
-//
-// TODO(mknyszek): Consider replacing this with a new dedicated G status.
-var isWaitingForGC = [len(waitReasonStrings)]bool{
-	waitReasonStoppingTheWorld:      true,
-	waitReasonGCMarkTermination:     true,
-	waitReasonGarbageCollection:     true,
-	waitReasonGarbageCollectionScan: true,
-	waitReasonTraceGoroutineStatus:  true,
-	waitReasonTraceProcStatus:       true,
-	waitReasonPageTraceFlush:        true,
-	waitReasonGCAssistMarking:       true,
-	waitReasonGCWorkerActive:        true,
-	waitReasonFlushProcCaches:       true,
-}
-
 var (
 	allm       *m
 	gomaxprocs int32
@@ -1180,17 +1144,13 @@ var (
 	forcegc    forcegcstate
 	sched      schedt
 	newprocs   int32
-)
 
-var (
 	// allpLock protects P-less reads and size changes of allp, idlepMask,
 	// and timerpMask, and all writes to allp.
 	allpLock mutex
-
 	// len(allp) == gomaxprocs; may change at safe points, otherwise
 	// immutable.
 	allp []*p
-
 	// Bitmask of Ps in _Pidle list, one bit per P. Reads and writes must
 	// be atomic. Length may change at safe points.
 	//
@@ -1202,41 +1162,10 @@ var (
 	//
 	// N.B., procresize takes ownership of all Ps in stopTheWorldWithSema.
 	idlepMask pMask
-
 	// Bitmask of Ps that may have a timer, one bit per P. Reads and writes
 	// must be atomic. Length may change at safe points.
-	//
-	// Ideally, the timer mask would be kept immediately consistent on any timer
-	// operations. Unfortunately, updating a shared global data structure in the
-	// timer hot path adds too much overhead in applications frequently switching
-	// between no timers and some timers.
-	//
-	// As a compromise, the timer mask is updated only on pidleget / pidleput. A
-	// running P (returned by pidleget) may add a timer at any time, so its mask
-	// must be set. An idle P (passed to pidleput) cannot add new timers while
-	// idle, so if it has no timers at that time, its mask may be cleared.
-	//
-	// Thus, we get the following effects on timer-stealing in findrunnable:
-	//
-	//   - Idle Ps with no timers when they go idle are never checked in findrunnable
-	//     (for work- or timer-stealing; this is the ideal case).
-	//   - Running Ps must always be checked.
-	//   - Idle Ps whose timers are stolen must continue to be checked until they run
-	//     again, even after timer expiration.
-	//
-	// When the P starts running again, the mask should be set, as a timer may be
-	// added at any time.
-	//
-	// TODO(prattmic): Additional targeted updates may improve the above cases.
-	// e.g., updating the mask when stealing a timer.
 	timerpMask pMask
-)
 
-// goarmsoftfp is used by runtime/cgo assembly.
-//
-//go:linkname goarmsoftfp
-
-var (
 	// Pool of GC parked background workers. Entries are type
 	// *gcBgMarkWorkerNode.
 	gcBgMarkWorkerPool lfstack
@@ -1250,23 +1179,8 @@ var (
 	// Set on startup in asm_{386,amd64}.s
 	processorVersionInfo uint32
 	isIntel              bool
-)
 
-// set by cmd/link on arm systems
-// accessed using linkname by internal/runtime/atomic.
-//
-// goarm should be an internal detail,
-// but widely used packages access it using linkname.
-// Notable members of the hall of shame include:
-//   - github.com/creativeprojects/go-selfupdate
-//
-// Do not remove or change the type signature.
-// See go.dev/issue/67401.
-//
-//go:linkname goarm
-var (
-	goarm       uint8
-	goarmsoftfp uint8
+	goarm uint8 // set by cmd/link on arm systems
 )
 
 // Set by the linker so the runtime can determine the buildmode.
@@ -1277,17 +1191,3 @@ var (
 
 // Must agree with internal/buildcfg.FramePointerEnabled.
 const framepointer_enabled = GOARCH == "amd64" || GOARCH == "arm64"
-
-// getcallerfp returns the frame pointer of the caller of the caller
-// of this function.
-//
-//go:nosplit
-//go:noinline
-func getcallerfp() uintptr {
-	fp := getfp() // This frame's FP.
-	if fp != 0 {
-		fp = *(*uintptr)(unsafe.Pointer(fp)) // The caller's FP.
-		fp = *(*uintptr)(unsafe.Pointer(fp)) // The caller's caller's FP.
-	}
-	return fp
-}

@@ -5,6 +5,7 @@
 package windows
 
 import (
+	"sync"
 	"syscall"
 	_ "unsafe"
 )
@@ -27,3 +28,13 @@ type TCP_INITIAL_RTO_PARAMETERS struct {
 	Rtt                   uint16
 	MaxSynRetransmissions uint8
 }
+
+var Support_TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS = sync.OnceValue(func() bool {
+	var maj, min, build uint32
+	rtlGetNtVersionNumbers(&maj, &min, &build)
+	return maj >= 10 && build&0xffff >= 16299
+})
+
+//go:linkname rtlGetNtVersionNumbers syscall.rtlGetNtVersionNumbers
+//go:noescape
+func rtlGetNtVersionNumbers(majorVersion *uint32, minorVersion *uint32, buildNumber *uint32)

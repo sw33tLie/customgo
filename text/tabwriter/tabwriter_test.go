@@ -635,7 +635,7 @@ func wantPanicString(t *testing.T, want string) {
 }
 
 func TestPanicDuringFlush(t *testing.T) {
-	defer wantPanicString(t, "tabwriter: panic during Flush (cannot write)")
+	defer wantPanicString(t, "tabwriter: panic during Flush")
 	var p panicWriter
 	w := new(Writer)
 	w.Init(p, 0, 0, 5, ' ', 0)
@@ -645,7 +645,7 @@ func TestPanicDuringFlush(t *testing.T) {
 }
 
 func TestPanicDuringWrite(t *testing.T) {
-	defer wantPanicString(t, "tabwriter: panic during Write (cannot write)")
+	defer wantPanicString(t, "tabwriter: panic during Write")
 	var p panicWriter
 	w := new(Writer)
 	w.Init(p, 0, 0, 5, ' ', 0)

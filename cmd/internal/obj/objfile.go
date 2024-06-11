@@ -57,9 +57,6 @@ func WriteObjFile(ctxt *Link, b *bio.Writer) {
 	if ctxt.IsAsm {
 		flags |= goobj.ObjFlagFromAssembly
 	}
-	if ctxt.Std {
-		flags |= goobj.ObjFlagStd
-	}
 	h := goobj.Header{
 		Magic:       goobj.Magic,
 		Fingerprint: ctxt.Fingerprint,
@@ -295,8 +292,8 @@ func (w *writer) StringTable() {
 			// Don't include them if Flag_noRefName
 			return
 		}
-		if strings.HasPrefix(s.Name, `"".`) {
-			w.ctxt.Diag("unqualified symbol name: %v", s.Name)
+		if w.pkgpath != "" {
+			s.Name = strings.Replace(s.Name, "\"\".", w.pkgpath+".", -1)
 		}
 		w.AddString(s.Name)
 	})
@@ -312,7 +309,6 @@ func (w *writer) StringTable() {
 const cutoff = int64(2e9) // 2 GB (or so; looks better in errors than 2^31)
 
 func (w *writer) Sym(s *LSym) {
-	name := s.Name
 	abi := uint16(s.ABI())
 	if s.Static() {
 		abi = goobj.SymABIstatic
@@ -352,15 +348,7 @@ func (w *writer) Sym(s *LSym) {
 	if s.IsPkgInit() {
 		flag2 |= goobj.SymFlagPkgInit
 	}
-	if s.IsLinkname() || (w.ctxt.IsAsm && name != "") || name == "main.main" {
-		// Assembly reference is treated the same as linkname,
-		// but not for unnamed (aux) symbols.
-		// The runtime linknames main.main.
-		flag2 |= goobj.SymFlagLinkname
-	}
-	if s.ABIWrapper() {
-		flag2 |= goobj.SymFlagABIWrapper
-	}
+	name := s.Name
 	if strings.HasPrefix(name, "gofile..") {
 		name = filepath.ToSlash(name)
 	}
@@ -435,7 +423,7 @@ func (w *writer) Hash(s *LSym) {
 // contentHashSection returns a mnemonic for s's section.
 // The goal is to prevent content-addressability from moving symbols between sections.
 // contentHashSection only distinguishes between sets of sections for which this matters.
-// Allowing flexibility increases the effectiveness of content-addressability.
+// Allowing flexibility increases the effectiveness of content-addressibility.
 // But in some cases, such as doing addressing based on a base symbol,
 // we need to ensure that a symbol is always in a particular section.
 // Some of these conditions are duplicated in cmd/link/internal/ld.(*Link).symtab.
@@ -797,18 +785,14 @@ func genFuncInfoSyms(ctxt *Link) {
 		fn.FuncInfoSym = isym
 		b.Reset()
 
-		auxsyms := []*LSym{fn.dwarfRangesSym, fn.dwarfLocSym, fn.dwarfDebugLinesSym, fn.dwarfInfoSym, fn.WasmImportSym}
+		auxsyms := []*LSym{fn.dwarfRangesSym, fn.dwarfLocSym, fn.dwarfDebugLinesSym, fn.dwarfInfoSym, fn.WasmImportSym, fn.sehUnwindInfoSym}
 		for _, s := range auxsyms {
 			if s == nil || s.Size == 0 {
 				continue
 			}
-			if s.OnList() {
-				panic("a symbol is added to defs multiple times")
-			}
 			s.PkgIdx = goobj.PkgIdxSelf
 			s.SymIdx = symidx
 			s.Set(AttrIndexed, true)
-			s.Set(AttrOnList, true)
 			symidx++
 			infosyms = append(infosyms, s)
 		}
@@ -852,9 +836,6 @@ func (ctxt *Link) writeSymDebugNamed(s *LSym, name string) {
 	ver := ""
 	if ctxt.Debugasm > 1 {
 		ver = fmt.Sprintf("<%d>", s.ABI())
-		if ctxt.Debugasm > 2 {
-			ver += fmt.Sprintf("<idx %d %d>", s.PkgIdx, s.SymIdx)
-		}
 	}
 	fmt.Fprintf(ctxt.Bso, "%s%s ", name, ver)
 	if s.Type != 0 {
@@ -933,9 +914,9 @@ func (ctxt *Link) writeSymDebugNamed(s *LSym, name string) {
 			name = "TLS"
 		}
 		if ctxt.Arch.InFamily(sys.ARM, sys.PPC64) {
-			fmt.Fprintf(ctxt.Bso, "\trel %d+%d t=%v %s%s+%x\n", int(r.Off), r.Siz, r.Type, name, ver, uint64(r.Add))
+			fmt.Fprintf(ctxt.Bso, "\trel %d+%d t=%d %s%s+%x\n", int(r.Off), r.Siz, r.Type, name, ver, uint64(r.Add))
 		} else {
-			fmt.Fprintf(ctxt.Bso, "\trel %d+%d t=%v %s%s+%d\n", int(r.Off), r.Siz, r.Type, name, ver, r.Add)
+			fmt.Fprintf(ctxt.Bso, "\trel %d+%d t=%d %s%s+%d\n", int(r.Off), r.Siz, r.Type, name, ver, r.Add)
 		}
 	}
 }

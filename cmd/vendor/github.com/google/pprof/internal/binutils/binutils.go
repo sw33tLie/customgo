@@ -433,8 +433,10 @@ func (b *binrep) openELF(name string, start, limit, offset uint64, relocationSym
 	defer ef.Close()
 
 	buildID := ""
-	if id, err := elfexec.GetBuildID(ef); err == nil {
-		buildID = fmt.Sprintf("%x", id)
+	if f, err := os.Open(name); err == nil {
+		if id, err := elfexec.GetBuildID(f); err == nil {
+			buildID = fmt.Sprintf("%x", id)
+		}
 	}
 
 	var (

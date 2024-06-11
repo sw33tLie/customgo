@@ -131,7 +131,9 @@ func (d *decoder) processDHT(n int) error {
 		}
 
 		// Derive the look-up table.
-		clear(h.lut[:])
+		for i := range h.lut {
+			h.lut[i] = 0
+		}
 		var x, code uint32
 		for i := uint32(0); i < lutSize; i++ {
 			code <<= 1

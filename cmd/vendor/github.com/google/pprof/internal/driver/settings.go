@@ -102,7 +102,7 @@ func configMenu(fname string, u url.URL) []configMenuEntry {
 			UserConfig: (i != 0),
 		}
 	}
-	// Mark the last matching config as current
+	// Mark the last matching config as currennt
 	if lastMatch >= 0 {
 		result[lastMatch].Current = true
 	}

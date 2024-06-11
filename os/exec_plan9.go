@@ -14,7 +14,7 @@ import (
 // The only signal values guaranteed to be present in the os package
 // on all systems are Interrupt (send the process an interrupt) and
 // Kill (force the process to exit). Interrupt is not implemented on
-// Windows; using it with [os.Process.Signal] will return an error.
+// Windows; using it with os.Process.Signal will return an error.
 var (
 	Interrupt Signal = syscall.Note("interrupt")
 	Kill      Signal = syscall.Note("kill")
@@ -32,12 +32,12 @@ func startProcess(name string, argv []string, attr *ProcAttr) (p *Process, err e
 		sysattr.Files = append(sysattr.Files, f.Fd())
 	}
 
-	pid, _, e := syscall.StartProcess(name, argv, sysattr)
+	pid, h, e := syscall.StartProcess(name, argv, sysattr)
 	if e != nil {
 		return nil, &PathError{Op: "fork/exec", Path: name, Err: e}
 	}
 
-	return newPIDProcess(pid), nil
+	return newProcess(pid, h), nil
 }
 
 func (p *Process) writeProcFile(file string, data string) error {
@@ -51,13 +51,9 @@ func (p *Process) writeProcFile(file string, data string) error {
 }
 
 func (p *Process) signal(sig Signal) error {
-	switch p.pidStatus() {
-	case statusDone:
+	if p.done() {
 		return ErrProcessDone
-	case statusReleased:
-		return syscall.ENOENT
 	}
-
 	if e := p.writeProcFile("note", sig.String()); e != nil {
 		return NewSyscallError("signal", e)
 	}
@@ -71,17 +67,15 @@ func (p *Process) kill() error {
 func (p *Process) wait() (ps *ProcessState, err error) {
 	var waitmsg syscall.Waitmsg
 
-	switch p.pidStatus() {
-	case statusReleased:
+	if p.Pid == -1 {
 		return nil, ErrInvalid
 	}
-
 	err = syscall.WaitProcess(p.Pid, &waitmsg)
 	if err != nil {
 		return nil, NewSyscallError("wait", err)
 	}
 
-	p.pidDeactivate(statusDone)
+	p.setDone()
 	ps = &ProcessState{
 		pid:    waitmsg.Pid,
 		status: &waitmsg,
@@ -90,11 +84,8 @@ func (p *Process) wait() (ps *ProcessState, err error) {
 }
 
 func (p *Process) release() error {
+	// NOOP for Plan 9.
 	p.Pid = -1
-
-	// Just mark the PID unusable.
-	p.pidDeactivate(statusReleased)
-
 	// no need for a finalizer anymore
 	runtime.SetFinalizer(p, nil)
 	return nil
@@ -102,7 +93,7 @@ func (p *Process) release() error {
 
 func findProcess(pid int) (p *Process, err error) {
 	// NOOP for Plan 9.
-	return newPIDProcess(pid), nil
+	return newProcess(pid, 0), nil
 }
 
 // ProcessState stores information about a process, as reported by Wait.

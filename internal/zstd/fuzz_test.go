@@ -22,10 +22,6 @@ var badStrings = []string{
 	"(\xb5/\xfd\x1002000$\x05\x0010\xcc0\xa8100000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
 	"(\xb5/\xfd\x1002000$\x05\x0000\xcc0\xa8100d\x0000001000000000000000000000000000000000000000000000000000000000000000000000000\x000000000000000000000000000000000000000000000000000000000000000000000000000000",
 	"(\xb5/\xfd001\x00\x0000000000000000000",
-	"(\xb5/\xfd00\xec\x00\x00&@\x05\x05A7002\x02\x00\x02\x00\x02\x0000000000000000",
-	"(\xb5/\xfd00\xec\x00\x00V@\x05\x0517002\x02\x00\x02\x00\x02\x0000000000000000",
-	"\x50\x2a\x4d\x18\x02\x00\x00\x00",
-	"(\xb5/\xfd\xe40000000\xfa20\x000",
 }
 
 // This is a simple fuzzer to see if the decompressor panics.
@@ -47,7 +43,9 @@ func FuzzReader(f *testing.F) {
 // explore the space of decompressor behavior, since it can't see
 // what the compressor is doing. But it's better than nothing.
 func FuzzDecompressor(f *testing.F) {
-	zstd := findZstd(f)
+	if _, err := os.Stat("/usr/bin/zstd"); err != nil {
+		f.Skip("skipping because /usr/bin/zstd does not exist")
+	}
 
 	for _, test := range tests {
 		f.Add([]byte(test.uncompressed))
@@ -63,7 +61,7 @@ func FuzzDecompressor(f *testing.F) {
 	f.Add(bigData(f))
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		cmd := exec.Command(zstd, "-z")
+		cmd := exec.Command("/usr/bin/zstd", "-z")
 		cmd.Stdin = bytes.NewReader(b)
 		var compressed bytes.Buffer
 		cmd.Stdout = &compressed
@@ -86,7 +84,9 @@ func FuzzDecompressor(f *testing.F) {
 // Fuzz test to check that if we can decompress some data,
 // so can zstd, and that we get the same result.
 func FuzzReverse(f *testing.F) {
-	zstd := findZstd(f)
+	if _, err := os.Stat("/usr/bin/zstd"); err != nil {
+		f.Skip("skipping because /usr/bin/zstd does not exist")
+	}
 
 	for _, test := range tests {
 		f.Add([]byte(test.compressed))
@@ -100,7 +100,7 @@ func FuzzReverse(f *testing.F) {
 		r := NewReader(bytes.NewReader(b))
 		goExp, goErr := io.ReadAll(r)
 
-		cmd := exec.Command(zstd, "-d")
+		cmd := exec.Command("/usr/bin/zstd", "-d")
 		cmd.Stdin = bytes.NewReader(b)
 		var uncompressed bytes.Buffer
 		cmd.Stdout = &uncompressed

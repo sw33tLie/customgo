@@ -27,7 +27,17 @@ import (
 	"io"
 	"os"
 	"strings"
-	"unsafe"
+)
+
+// seekStart, seekCurrent, seekEnd are copies of
+// io.SeekStart, io.SeekCurrent, and io.SeekEnd.
+// We can't use the ones from package io because
+// we want this code to build with Go 1.4 during
+// cmd/dist bootstrap.
+const (
+	seekStart   int = 0
+	seekCurrent int = 1
+	seekEnd     int = 2
 )
 
 // TODO: error reporting detail
@@ -104,7 +114,7 @@ type Section struct {
 // Even if the section is stored compressed in the ELF file,
 // Data returns uncompressed data.
 //
-// For an [SHT_NOBITS] section, Data always returns a non-nil error.
+// For an SHT_NOBITS section, Data always returns a non-nil error.
 func (s *Section) Data() ([]byte, error) {
 	return saferio.ReadData(s.Open(), s.Size)
 }
@@ -122,7 +132,7 @@ func (f *File) stringTable(link uint32) ([]byte, error) {
 // Even if the section is stored compressed in the ELF file,
 // the ReadSeeker reads uncompressed data.
 //
-// For an [SHT_NOBITS] section, all calls to the opened reader
+// For an SHT_NOBITS section, all calls to the opened reader
 // will return a non-nil error.
 func (s *Section) Open() io.ReadSeeker {
 	if s.Type == SHT_NOBITS {
@@ -235,7 +245,7 @@ func (e *FormatError) Error() string {
 	return msg
 }
 
-// Open opens the named file using [os.Open] and prepares it for use as an ELF binary.
+// Open opens the named file using os.Open and prepares it for use as an ELF binary.
 func Open(name string) (*File, error) {
 	f, err := os.Open(name)
 	if err != nil {
@@ -250,8 +260,8 @@ func Open(name string) (*File, error) {
 	return ff, nil
 }
 
-// Close closes the [File].
-// If the [File] was created using [NewFile] directly instead of [Open],
+// Close closes the File.
+// If the File was created using NewFile directly instead of Open,
 // Close has no effect.
 func (f *File) Close() error {
 	var err error
@@ -273,7 +283,7 @@ func (f *File) SectionByType(typ SectionType) *Section {
 	return nil
 }
 
-// NewFile creates a new [File] for accessing an ELF binary in an underlying reader.
+// NewFile creates a new File for accessing an ELF binary in an underlying reader.
 // The ELF binary is expected to start at position 0 in the ReaderAt.
 func NewFile(r io.ReaderAt) (*File, error) {
 	sr := io.NewSectionReader(r, 0, 1<<63-1)
@@ -297,16 +307,14 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	}
 
 	f.Data = Data(ident[EI_DATA])
-	var bo binary.ByteOrder
 	switch f.Data {
 	case ELFDATA2LSB:
-		bo = binary.LittleEndian
+		f.ByteOrder = binary.LittleEndian
 	case ELFDATA2MSB:
-		bo = binary.BigEndian
+		f.ByteOrder = binary.BigEndian
 	default:
 		return nil, &FormatError{0, "unknown ELF data encoding", f.Data}
 	}
-	f.ByteOrder = bo
 
 	f.Version = Version(ident[EI_VERSION])
 	if f.Version != EV_CURRENT {
@@ -323,43 +331,43 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	var shentsize, shnum, shstrndx int
 	switch f.Class {
 	case ELFCLASS32:
-		var hdr Header32
-		data := make([]byte, unsafe.Sizeof(hdr))
-		if _, err := sr.ReadAt(data, 0); err != nil {
+		hdr := new(Header32)
+		sr.Seek(0, seekStart)
+		if err := binary.Read(sr, f.ByteOrder, hdr); err != nil {
 			return nil, err
 		}
-		f.Type = Type(bo.Uint16(data[unsafe.Offsetof(hdr.Type):]))
-		f.Machine = Machine(bo.Uint16(data[unsafe.Offsetof(hdr.Machine):]))
-		f.Entry = uint64(bo.Uint32(data[unsafe.Offsetof(hdr.Entry):]))
-		if v := Version(bo.Uint32(data[unsafe.Offsetof(hdr.Version):])); v != f.Version {
+		f.Type = Type(hdr.Type)
+		f.Machine = Machine(hdr.Machine)
+		f.Entry = uint64(hdr.Entry)
+		if v := Version(hdr.Version); v != f.Version {
 			return nil, &FormatError{0, "mismatched ELF version", v}
 		}
-		phoff = int64(bo.Uint32(data[unsafe.Offsetof(hdr.Phoff):]))
-		phentsize = int(bo.Uint16(data[unsafe.Offsetof(hdr.Phentsize):]))
-		phnum = int(bo.Uint16(data[unsafe.Offsetof(hdr.Phnum):]))
-		shoff = int64(bo.Uint32(data[unsafe.Offsetof(hdr.Shoff):]))
-		shentsize = int(bo.Uint16(data[unsafe.Offsetof(hdr.Shentsize):]))
-		shnum = int(bo.Uint16(data[unsafe.Offsetof(hdr.Shnum):]))
-		shstrndx = int(bo.Uint16(data[unsafe.Offsetof(hdr.Shstrndx):]))
+		phoff = int64(hdr.Phoff)
+		phentsize = int(hdr.Phentsize)
+		phnum = int(hdr.Phnum)
+		shoff = int64(hdr.Shoff)
+		shentsize = int(hdr.Shentsize)
+		shnum = int(hdr.Shnum)
+		shstrndx = int(hdr.Shstrndx)
 	case ELFCLASS64:
-		var hdr Header64
-		data := make([]byte, unsafe.Sizeof(hdr))
-		if _, err := sr.ReadAt(data, 0); err != nil {
+		hdr := new(Header64)
+		sr.Seek(0, seekStart)
+		if err := binary.Read(sr, f.ByteOrder, hdr); err != nil {
 			return nil, err
 		}
-		f.Type = Type(bo.Uint16(data[unsafe.Offsetof(hdr.Type):]))
-		f.Machine = Machine(bo.Uint16(data[unsafe.Offsetof(hdr.Machine):]))
-		f.Entry = bo.Uint64(data[unsafe.Offsetof(hdr.Entry):])
-		if v := Version(bo.Uint32(data[unsafe.Offsetof(hdr.Version):])); v != f.Version {
+		f.Type = Type(hdr.Type)
+		f.Machine = Machine(hdr.Machine)
+		f.Entry = hdr.Entry
+		if v := Version(hdr.Version); v != f.Version {
 			return nil, &FormatError{0, "mismatched ELF version", v}
 		}
-		phoff = int64(bo.Uint64(data[unsafe.Offsetof(hdr.Phoff):]))
-		phentsize = int(bo.Uint16(data[unsafe.Offsetof(hdr.Phentsize):]))
-		phnum = int(bo.Uint16(data[unsafe.Offsetof(hdr.Phnum):]))
-		shoff = int64(bo.Uint64(data[unsafe.Offsetof(hdr.Shoff):]))
-		shentsize = int(bo.Uint16(data[unsafe.Offsetof(hdr.Shentsize):]))
-		shnum = int(bo.Uint16(data[unsafe.Offsetof(hdr.Shnum):]))
-		shstrndx = int(bo.Uint16(data[unsafe.Offsetof(hdr.Shstrndx):]))
+		phoff = int64(hdr.Phoff)
+		phentsize = int(hdr.Phentsize)
+		phnum = int(hdr.Phnum)
+		shoff = int64(hdr.Shoff)
+		shentsize = int(hdr.Shentsize)
+		shnum = int(hdr.Shnum)
+		shstrndx = int(hdr.Shstrndx)
 	}
 
 	if shoff < 0 {
@@ -392,44 +400,47 @@ func NewFile(r io.ReaderAt) (*File, error) {
 
 	// Read program headers
 	f.Progs = make([]*Prog, phnum)
-	phdata, err := saferio.ReadDataAt(sr, uint64(phnum)*uint64(phentsize), phoff)
-	if err != nil {
-		return nil, err
-	}
 	for i := 0; i < phnum; i++ {
-		off := uintptr(i) * uintptr(phentsize)
+		off := phoff + int64(i)*int64(phentsize)
+		sr.Seek(off, seekStart)
 		p := new(Prog)
 		switch f.Class {
 		case ELFCLASS32:
-			var ph Prog32
+			ph := new(Prog32)
+			if err := binary.Read(sr, f.ByteOrder, ph); err != nil {
+				return nil, err
+			}
 			p.ProgHeader = ProgHeader{
-				Type:   ProgType(bo.Uint32(phdata[off+unsafe.Offsetof(ph.Type):])),
-				Flags:  ProgFlag(bo.Uint32(phdata[off+unsafe.Offsetof(ph.Flags):])),
-				Off:    uint64(bo.Uint32(phdata[off+unsafe.Offsetof(ph.Off):])),
-				Vaddr:  uint64(bo.Uint32(phdata[off+unsafe.Offsetof(ph.Vaddr):])),
-				Paddr:  uint64(bo.Uint32(phdata[off+unsafe.Offsetof(ph.Paddr):])),
-				Filesz: uint64(bo.Uint32(phdata[off+unsafe.Offsetof(ph.Filesz):])),
-				Memsz:  uint64(bo.Uint32(phdata[off+unsafe.Offsetof(ph.Memsz):])),
-				Align:  uint64(bo.Uint32(phdata[off+unsafe.Offsetof(ph.Align):])),
+				Type:   ProgType(ph.Type),
+				Flags:  ProgFlag(ph.Flags),
+				Off:    uint64(ph.Off),
+				Vaddr:  uint64(ph.Vaddr),
+				Paddr:  uint64(ph.Paddr),
+				Filesz: uint64(ph.Filesz),
+				Memsz:  uint64(ph.Memsz),
+				Align:  uint64(ph.Align),
 			}
 		case ELFCLASS64:
-			var ph Prog64
+			ph := new(Prog64)
+			if err := binary.Read(sr, f.ByteOrder, ph); err != nil {
+				return nil, err
+			}
 			p.ProgHeader = ProgHeader{
-				Type:   ProgType(bo.Uint32(phdata[off+unsafe.Offsetof(ph.Type):])),
-				Flags:  ProgFlag(bo.Uint32(phdata[off+unsafe.Offsetof(ph.Flags):])),
-				Off:    bo.Uint64(phdata[off+unsafe.Offsetof(ph.Off):]),
-				Vaddr:  bo.Uint64(phdata[off+unsafe.Offsetof(ph.Vaddr):]),
-				Paddr:  bo.Uint64(phdata[off+unsafe.Offsetof(ph.Paddr):]),
-				Filesz: bo.Uint64(phdata[off+unsafe.Offsetof(ph.Filesz):]),
-				Memsz:  bo.Uint64(phdata[off+unsafe.Offsetof(ph.Memsz):]),
-				Align:  bo.Uint64(phdata[off+unsafe.Offsetof(ph.Align):]),
+				Type:   ProgType(ph.Type),
+				Flags:  ProgFlag(ph.Flags),
+				Off:    ph.Off,
+				Vaddr:  ph.Vaddr,
+				Paddr:  ph.Paddr,
+				Filesz: ph.Filesz,
+				Memsz:  ph.Memsz,
+				Align:  ph.Align,
 			}
 		}
 		if int64(p.Off) < 0 {
-			return nil, &FormatError{phoff + int64(off), "invalid program header offset", p.Off}
+			return nil, &FormatError{off, "invalid program header offset", p.Off}
 		}
 		if int64(p.Filesz) < 0 {
-			return nil, &FormatError{phoff + int64(off), "invalid program header file size", p.Filesz}
+			return nil, &FormatError{off, "invalid program header file size", p.Filesz}
 		}
 		p.sr = io.NewSectionReader(r, int64(p.Off), int64(p.Filesz))
 		p.ReaderAt = p.sr
@@ -442,11 +453,11 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	// header at index 0.
 	if shoff > 0 && shnum == 0 {
 		var typ, link uint32
-		sr.Seek(shoff, io.SeekStart)
+		sr.Seek(shoff, seekStart)
 		switch f.Class {
 		case ELFCLASS32:
 			sh := new(Section32)
-			if err := binary.Read(sr, bo, sh); err != nil {
+			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
 				return nil, err
 			}
 			shnum = int(sh.Size)
@@ -454,7 +465,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			link = sh.Link
 		case ELFCLASS64:
 			sh := new(Section64)
-			if err := binary.Read(sr, bo, sh); err != nil {
+			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
 				return nil, err
 			}
 			shnum = int(sh.Size)
@@ -487,54 +498,57 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	}
 
 	// Read section headers
-	c := saferio.SliceCap[Section](uint64(shnum))
+	c := saferio.SliceCap((*Section)(nil), uint64(shnum))
 	if c < 0 {
 		return nil, &FormatError{0, "too many sections", shnum}
 	}
 	f.Sections = make([]*Section, 0, c)
 	names := make([]uint32, 0, c)
-	shdata, err := saferio.ReadDataAt(sr, uint64(shnum)*uint64(shentsize), shoff)
-	if err != nil {
-		return nil, err
-	}
 	for i := 0; i < shnum; i++ {
-		off := uintptr(i) * uintptr(shentsize)
+		off := shoff + int64(i)*int64(shentsize)
+		sr.Seek(off, seekStart)
 		s := new(Section)
 		switch f.Class {
 		case ELFCLASS32:
-			var sh Section32
-			names = append(names, bo.Uint32(shdata[off+unsafe.Offsetof(sh.Name):]))
+			sh := new(Section32)
+			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
+				return nil, err
+			}
+			names = append(names, sh.Name)
 			s.SectionHeader = SectionHeader{
-				Type:      SectionType(bo.Uint32(shdata[off+unsafe.Offsetof(sh.Type):])),
-				Flags:     SectionFlag(bo.Uint32(shdata[off+unsafe.Offsetof(sh.Flags):])),
-				Addr:      uint64(bo.Uint32(shdata[off+unsafe.Offsetof(sh.Addr):])),
-				Offset:    uint64(bo.Uint32(shdata[off+unsafe.Offsetof(sh.Off):])),
-				FileSize:  uint64(bo.Uint32(shdata[off+unsafe.Offsetof(sh.Size):])),
-				Link:      bo.Uint32(shdata[off+unsafe.Offsetof(sh.Link):]),
-				Info:      bo.Uint32(shdata[off+unsafe.Offsetof(sh.Info):]),
-				Addralign: uint64(bo.Uint32(shdata[off+unsafe.Offsetof(sh.Addralign):])),
-				Entsize:   uint64(bo.Uint32(shdata[off+unsafe.Offsetof(sh.Entsize):])),
+				Type:      SectionType(sh.Type),
+				Flags:     SectionFlag(sh.Flags),
+				Addr:      uint64(sh.Addr),
+				Offset:    uint64(sh.Off),
+				FileSize:  uint64(sh.Size),
+				Link:      sh.Link,
+				Info:      sh.Info,
+				Addralign: uint64(sh.Addralign),
+				Entsize:   uint64(sh.Entsize),
 			}
 		case ELFCLASS64:
-			var sh Section64
-			names = append(names, bo.Uint32(shdata[off+unsafe.Offsetof(sh.Name):]))
+			sh := new(Section64)
+			if err := binary.Read(sr, f.ByteOrder, sh); err != nil {
+				return nil, err
+			}
+			names = append(names, sh.Name)
 			s.SectionHeader = SectionHeader{
-				Type:      SectionType(bo.Uint32(shdata[off+unsafe.Offsetof(sh.Type):])),
-				Flags:     SectionFlag(bo.Uint64(shdata[off+unsafe.Offsetof(sh.Flags):])),
-				Offset:    bo.Uint64(shdata[off+unsafe.Offsetof(sh.Off):]),
-				FileSize:  bo.Uint64(shdata[off+unsafe.Offsetof(sh.Size):]),
-				Addr:      bo.Uint64(shdata[off+unsafe.Offsetof(sh.Addr):]),
-				Link:      bo.Uint32(shdata[off+unsafe.Offsetof(sh.Link):]),
-				Info:      bo.Uint32(shdata[off+unsafe.Offsetof(sh.Info):]),
-				Addralign: bo.Uint64(shdata[off+unsafe.Offsetof(sh.Addralign):]),
-				Entsize:   bo.Uint64(shdata[off+unsafe.Offsetof(sh.Entsize):]),
+				Type:      SectionType(sh.Type),
+				Flags:     SectionFlag(sh.Flags),
+				Offset:    sh.Off,
+				FileSize:  sh.Size,
+				Addr:      sh.Addr,
+				Link:      sh.Link,
+				Info:      sh.Info,
+				Addralign: sh.Addralign,
+				Entsize:   sh.Entsize,
 			}
 		}
 		if int64(s.Offset) < 0 {
-			return nil, &FormatError{shoff + int64(off), "invalid section offset", int64(s.Offset)}
+			return nil, &FormatError{off, "invalid section offset", int64(s.Offset)}
 		}
 		if int64(s.FileSize) < 0 {
-			return nil, &FormatError{shoff + int64(off), "invalid section size", int64(s.FileSize)}
+			return nil, &FormatError{off, "invalid section size", int64(s.FileSize)}
 		}
 		s.sr = io.NewSectionReader(r, int64(s.Offset), int64(s.FileSize))
 
@@ -545,25 +559,23 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			// Read the compression header.
 			switch f.Class {
 			case ELFCLASS32:
-				var ch Chdr32
-				chdata := make([]byte, unsafe.Sizeof(ch))
-				if _, err := s.sr.ReadAt(chdata, 0); err != nil {
+				ch := new(Chdr32)
+				if err := binary.Read(s.sr, f.ByteOrder, ch); err != nil {
 					return nil, err
 				}
-				s.compressionType = CompressionType(bo.Uint32(chdata[unsafe.Offsetof(ch.Type):]))
-				s.Size = uint64(bo.Uint32(chdata[unsafe.Offsetof(ch.Size):]))
-				s.Addralign = uint64(bo.Uint32(chdata[unsafe.Offsetof(ch.Addralign):]))
-				s.compressionOffset = int64(unsafe.Sizeof(ch))
+				s.compressionType = CompressionType(ch.Type)
+				s.Size = uint64(ch.Size)
+				s.Addralign = uint64(ch.Addralign)
+				s.compressionOffset = int64(binary.Size(ch))
 			case ELFCLASS64:
-				var ch Chdr64
-				chdata := make([]byte, unsafe.Sizeof(ch))
-				if _, err := s.sr.ReadAt(chdata, 0); err != nil {
+				ch := new(Chdr64)
+				if err := binary.Read(s.sr, f.ByteOrder, ch); err != nil {
 					return nil, err
 				}
-				s.compressionType = CompressionType(bo.Uint32(chdata[unsafe.Offsetof(ch.Type):]))
-				s.Size = bo.Uint64(chdata[unsafe.Offsetof(ch.Size):])
-				s.Addralign = bo.Uint64(chdata[unsafe.Offsetof(ch.Addralign):])
-				s.compressionOffset = int64(unsafe.Sizeof(ch))
+				s.compressionType = CompressionType(ch.Type)
+				s.Size = ch.Size
+				s.Addralign = ch.Addralign
+				s.compressionOffset = int64(binary.Size(ch))
 			}
 		}
 
@@ -613,7 +625,7 @@ func (f *File) getSymbols(typ SectionType) ([]Symbol, []byte, error) {
 	return nil, nil, errors.New("not implemented")
 }
 
-// ErrNoSymbols is returned by [File.Symbols] and [File.DynamicSymbols]
+// ErrNoSymbols is returned by File.Symbols and File.DynamicSymbols
 // if there is no such section in the File.
 var ErrNoSymbols = errors.New("no symbol section")
 
@@ -627,10 +639,8 @@ func (f *File) getSymbols32(typ SectionType) ([]Symbol, []byte, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot load symbol section: %w", err)
 	}
-	if len(data) == 0 {
-		return nil, nil, errors.New("symbol section is empty")
-	}
-	if len(data)%Sym32Size != 0 {
+	symtab := bytes.NewReader(data)
+	if symtab.Len()%Sym32Size != 0 {
 		return nil, nil, errors.New("length of symbol section is not a multiple of SymSize")
 	}
 
@@ -640,19 +650,15 @@ func (f *File) getSymbols32(typ SectionType) ([]Symbol, []byte, error) {
 	}
 
 	// The first entry is all zeros.
-	data = data[Sym32Size:]
+	var skip [Sym32Size]byte
+	symtab.Read(skip[:])
 
-	symbols := make([]Symbol, len(data)/Sym32Size)
+	symbols := make([]Symbol, symtab.Len()/Sym32Size)
 
 	i := 0
 	var sym Sym32
-	for len(data) > 0 {
-		sym.Name = f.ByteOrder.Uint32(data[0:4])
-		sym.Value = f.ByteOrder.Uint32(data[4:8])
-		sym.Size = f.ByteOrder.Uint32(data[8:12])
-		sym.Info = data[12]
-		sym.Other = data[13]
-		sym.Shndx = f.ByteOrder.Uint16(data[14:16])
+	for symtab.Len() > 0 {
+		binary.Read(symtab, f.ByteOrder, &sym)
 		str, _ := getString(strdata, int(sym.Name))
 		symbols[i].Name = str
 		symbols[i].Info = sym.Info
@@ -661,7 +667,6 @@ func (f *File) getSymbols32(typ SectionType) ([]Symbol, []byte, error) {
 		symbols[i].Value = uint64(sym.Value)
 		symbols[i].Size = uint64(sym.Size)
 		i++
-		data = data[Sym32Size:]
 	}
 
 	return symbols, strdata, nil
@@ -677,7 +682,8 @@ func (f *File) getSymbols64(typ SectionType) ([]Symbol, []byte, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot load symbol section: %w", err)
 	}
-	if len(data)%Sym64Size != 0 {
+	symtab := bytes.NewReader(data)
+	if symtab.Len()%Sym64Size != 0 {
 		return nil, nil, errors.New("length of symbol section is not a multiple of Sym64Size")
 	}
 
@@ -687,19 +693,15 @@ func (f *File) getSymbols64(typ SectionType) ([]Symbol, []byte, error) {
 	}
 
 	// The first entry is all zeros.
-	data = data[Sym64Size:]
+	var skip [Sym64Size]byte
+	symtab.Read(skip[:])
 
-	symbols := make([]Symbol, len(data)/Sym64Size)
+	symbols := make([]Symbol, symtab.Len()/Sym64Size)
 
 	i := 0
 	var sym Sym64
-	for len(data) > 0 {
-		sym.Name = f.ByteOrder.Uint32(data[0:4])
-		sym.Info = data[4]
-		sym.Other = data[5]
-		sym.Shndx = f.ByteOrder.Uint16(data[6:8])
-		sym.Value = f.ByteOrder.Uint64(data[8:16])
-		sym.Size = f.ByteOrder.Uint64(data[16:24])
+	for symtab.Len() > 0 {
+		binary.Read(symtab, f.ByteOrder, &sym)
 		str, _ := getString(strdata, int(sym.Name))
 		symbols[i].Name = str
 		symbols[i].Info = sym.Info
@@ -708,7 +710,6 @@ func (f *File) getSymbols64(typ SectionType) ([]Symbol, []byte, error) {
 		symbols[i].Value = sym.Value
 		symbols[i].Size = sym.Size
 		i++
-		data = data[Sym64Size:]
 	}
 
 	return symbols, strdata, nil
@@ -1433,10 +1434,10 @@ func (f *File) Symbols() ([]Symbol, error) {
 // DynamicSymbols returns the dynamic symbol table for f. The symbols
 // will be listed in the order they appear in f.
 //
-// If f has a symbol version table, the returned [File.Symbols] will have
+// If f has a symbol version table, the returned Symbols will have
 // initialized Version and Library fields.
 //
-// For compatibility with [File.Symbols], [File.DynamicSymbols] omits the null symbol at index 0.
+// For compatibility with Symbols, DynamicSymbols omits the null symbol at index 0.
 // After retrieving the symbols as symtab, an externally supplied index x
 // corresponds to symtab[x-1], not symtab[x].
 func (f *File) DynamicSymbols() ([]Symbol, error) {
@@ -1589,8 +1590,8 @@ func (f *File) ImportedLibraries() ([]string, error) {
 // DynString returns the strings listed for the given tag in the file's dynamic
 // section.
 //
-// The tag must be one that takes string values: [DT_NEEDED], [DT_SONAME], [DT_RPATH], or
-// [DT_RUNPATH].
+// The tag must be one that takes string values: DT_NEEDED, DT_SONAME, DT_RPATH, or
+// DT_RUNPATH.
 func (f *File) DynString(tag DynTag) ([]string, error) {
 	switch tag {
 	case DT_NEEDED, DT_SONAME, DT_RPATH, DT_RUNPATH:
@@ -1606,15 +1607,6 @@ func (f *File) DynString(tag DynTag) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	dynSize := 8
-	if f.Class == ELFCLASS64 {
-		dynSize = 16
-	}
-	if len(d)%dynSize != 0 {
-		return nil, errors.New("length of dynamic section is not a multiple of dynamic entry size")
-	}
-
 	str, err := f.stringTable(ds.Link)
 	if err != nil {
 		return nil, err
@@ -1653,14 +1645,6 @@ func (f *File) DynValue(tag DynTag) ([]uint64, error) {
 	d, err := ds.Data()
 	if err != nil {
 		return nil, err
-	}
-
-	dynSize := 8
-	if f.Class == ELFCLASS64 {
-		dynSize = 16
-	}
-	if len(d)%dynSize != 0 {
-		return nil, errors.New("length of dynamic section is not a multiple of dynamic entry size")
 	}
 
 	// Parse the .dynamic section as a string of bytes.

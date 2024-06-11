@@ -8,7 +8,6 @@ package xcoff
 import (
 	"debug/dwarf"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"internal/saferio"
 	"io"
@@ -226,7 +225,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	if _, err := sr.Seek(int64(hdrsz)+int64(opthdr), io.SeekStart); err != nil {
 		return nil, err
 	}
-	c := saferio.SliceCap[*Section](uint64(nscns))
+	c := saferio.SliceCap((**Section)(nil), uint64(nscns))
 	if c < 0 {
 		return nil, fmt.Errorf("too many XCOFF sections (%d)", nscns)
 	}
@@ -262,7 +261,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		}
 		r2 := r
 		if scnptr == 0 { // .bss must have all 0s
-			r2 = &nobitsSectionReader{}
+			r2 = zeroReaderAt{}
 		}
 		s.sr = io.NewSectionReader(r2, int64(scnptr), int64(s.Size))
 		s.ReaderAt = s.sr
@@ -400,7 +399,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		if sect.Relptr == 0 {
 			continue
 		}
-		c := saferio.SliceCap[Reloc](uint64(sect.Nreloc))
+		c := saferio.SliceCap((*Reloc)(nil), uint64(sect.Nreloc))
 		if c < 0 {
 			return nil, fmt.Errorf("too many relocs (%d) for section %d", sect.Nreloc, sectNum)
 		}
@@ -452,10 +451,15 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	return f, nil
 }
 
-type nobitsSectionReader struct{}
+// zeroReaderAt is ReaderAt that reads 0s.
+type zeroReaderAt struct{}
 
-func (*nobitsSectionReader) ReadAt(p []byte, off int64) (n int, err error) {
-	return 0, errors.New("unexpected read from section with uninitialized data")
+// ReadAt writes len(p) 0s into p.
+func (w zeroReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
 }
 
 // Data reads and returns the contents of the XCOFF section s.

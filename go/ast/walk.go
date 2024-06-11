@@ -4,21 +4,38 @@
 
 package ast
 
-import (
-	"fmt"
-	"iter"
-)
+import "fmt"
 
-// A Visitor's Visit method is invoked for each node encountered by [Walk].
-// If the result visitor w is not nil, [Walk] visits each of the children
+// A Visitor's Visit method is invoked for each node encountered by Walk.
+// If the result visitor w is not nil, Walk visits each of the children
 // of node with the visitor w, followed by a call of w.Visit(nil).
 type Visitor interface {
 	Visit(node Node) (w Visitor)
 }
 
-func walkList[N Node](v Visitor, list []N) {
-	for _, node := range list {
-		Walk(v, node)
+// Helper functions for common node lists. They may be empty.
+
+func walkIdentList(v Visitor, list []*Ident) {
+	for _, x := range list {
+		Walk(v, x)
+	}
+}
+
+func walkExprList(v Visitor, list []Expr) {
+	for _, x := range list {
+		Walk(v, x)
+	}
+}
+
+func walkStmtList(v Visitor, list []Stmt) {
+	for _, x := range list {
+		Walk(v, x)
+	}
+}
+
+func walkDeclList(v Visitor, list []Decl) {
+	for _, x := range list {
+		Walk(v, x)
 	}
 }
 
@@ -44,13 +61,15 @@ func Walk(v Visitor, node Node) {
 		// nothing to do
 
 	case *CommentGroup:
-		walkList(v, n.List)
+		for _, c := range n.List {
+			Walk(v, c)
+		}
 
 	case *Field:
 		if n.Doc != nil {
 			Walk(v, n.Doc)
 		}
-		walkList(v, n.Names)
+		walkIdentList(v, n.Names)
 		if n.Type != nil {
 			Walk(v, n.Type)
 		}
@@ -62,7 +81,9 @@ func Walk(v Visitor, node Node) {
 		}
 
 	case *FieldList:
-		walkList(v, n.List)
+		for _, f := range n.List {
+			Walk(v, f)
+		}
 
 	// Expressions
 	case *BadExpr, *Ident, *BasicLit:
@@ -81,7 +102,7 @@ func Walk(v Visitor, node Node) {
 		if n.Type != nil {
 			Walk(v, n.Type)
 		}
-		walkList(v, n.Elts)
+		walkExprList(v, n.Elts)
 
 	case *ParenExpr:
 		Walk(v, n.X)
@@ -96,7 +117,9 @@ func Walk(v Visitor, node Node) {
 
 	case *IndexListExpr:
 		Walk(v, n.X)
-		walkList(v, n.Indices)
+		for _, index := range n.Indices {
+			Walk(v, index)
+		}
 
 	case *SliceExpr:
 		Walk(v, n.X)
@@ -118,7 +141,7 @@ func Walk(v Visitor, node Node) {
 
 	case *CallExpr:
 		Walk(v, n.Fun)
-		walkList(v, n.Args)
+		walkExprList(v, n.Args)
 
 	case *StarExpr:
 		Walk(v, n.X)
@@ -190,8 +213,8 @@ func Walk(v Visitor, node Node) {
 		Walk(v, n.X)
 
 	case *AssignStmt:
-		walkList(v, n.Lhs)
-		walkList(v, n.Rhs)
+		walkExprList(v, n.Lhs)
+		walkExprList(v, n.Rhs)
 
 	case *GoStmt:
 		Walk(v, n.Call)
@@ -200,7 +223,7 @@ func Walk(v Visitor, node Node) {
 		Walk(v, n.Call)
 
 	case *ReturnStmt:
-		walkList(v, n.Results)
+		walkExprList(v, n.Results)
 
 	case *BranchStmt:
 		if n.Label != nil {
@@ -208,7 +231,7 @@ func Walk(v Visitor, node Node) {
 		}
 
 	case *BlockStmt:
-		walkList(v, n.List)
+		walkStmtList(v, n.List)
 
 	case *IfStmt:
 		if n.Init != nil {
@@ -221,8 +244,8 @@ func Walk(v Visitor, node Node) {
 		}
 
 	case *CaseClause:
-		walkList(v, n.List)
-		walkList(v, n.Body)
+		walkExprList(v, n.List)
+		walkStmtList(v, n.Body)
 
 	case *SwitchStmt:
 		if n.Init != nil {
@@ -244,7 +267,7 @@ func Walk(v Visitor, node Node) {
 		if n.Comm != nil {
 			Walk(v, n.Comm)
 		}
-		walkList(v, n.Body)
+		walkStmtList(v, n.Body)
 
 	case *SelectStmt:
 		Walk(v, n.Body)
@@ -288,11 +311,11 @@ func Walk(v Visitor, node Node) {
 		if n.Doc != nil {
 			Walk(v, n.Doc)
 		}
-		walkList(v, n.Names)
+		walkIdentList(v, n.Names)
 		if n.Type != nil {
 			Walk(v, n.Type)
 		}
-		walkList(v, n.Values)
+		walkExprList(v, n.Values)
 		if n.Comment != nil {
 			Walk(v, n.Comment)
 		}
@@ -317,7 +340,9 @@ func Walk(v Visitor, node Node) {
 		if n.Doc != nil {
 			Walk(v, n.Doc)
 		}
-		walkList(v, n.Specs)
+		for _, s := range n.Specs {
+			Walk(v, s)
+		}
 
 	case *FuncDecl:
 		if n.Doc != nil {
@@ -338,7 +363,7 @@ func Walk(v Visitor, node Node) {
 			Walk(v, n.Doc)
 		}
 		Walk(v, n.Name)
-		walkList(v, n.Decls)
+		walkDeclList(v, n.Decls)
 		// don't walk n.Comments - they have been
 		// visited already through the individual
 		// nodes
@@ -370,22 +395,4 @@ func (f inspector) Visit(node Node) Visitor {
 // call of f(nil).
 func Inspect(node Node, f func(Node) bool) {
 	Walk(inspector(f), node)
-}
-
-// Preorder returns an iterator over all the nodes of the syntax tree
-// beneath (and including) the specified root, in depth-first
-// preorder.
-//
-// For greater control over the traversal of each subtree, use [Inspect].
-func Preorder(root Node) iter.Seq[Node] {
-	return func(yield func(Node) bool) {
-		ok := true
-		Inspect(root, func(n Node) bool {
-			if n != nil {
-				// yield must not be called once ok is false.
-				ok = ok && yield(n)
-			}
-			return ok
-		})
-	}
 }

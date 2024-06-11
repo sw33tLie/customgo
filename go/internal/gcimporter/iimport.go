@@ -19,7 +19,7 @@ import (
 	"io"
 	"math"
 	"math/big"
-	"slices"
+	"sort"
 	"strings"
 )
 
@@ -145,9 +145,6 @@ func iImportData(fset *token.FileSet, imports map[string]*types.Package, dataRea
 	for i, pt := range predeclared {
 		p.typCache[uint64(i)] = pt
 	}
-	// Special handling for "any", whose representation may be changed by the
-	// gotypesalias GODEBUG variable.
-	p.typCache[uint64(len(predeclared))] = types.Universe.Lookup("any").Type()
 
 	pkgList := make([]*types.Package, r.uint64())
 	for i := range pkgList {
@@ -185,7 +182,7 @@ func iImportData(fset *token.FileSet, imports map[string]*types.Package, dataRea
 	for name := range p.pkgIndex[localpkg] {
 		names = append(names, name)
 	}
-	slices.Sort(names)
+	sort.Strings(names)
 	for _, name := range names {
 		p.doDecl(localpkg, name)
 	}
@@ -205,9 +202,7 @@ func iImportData(fset *token.FileSet, imports map[string]*types.Package, dataRea
 
 	// record all referenced packages as imports
 	list := append(([]*types.Package)(nil), pkgList[1:]...)
-	slices.SortFunc(list, func(a, b *types.Package) int {
-		return strings.Compare(a.Path(), b.Path())
-	})
+	sort.Sort(byPath(list))
 	localpkg.SetImports(list)
 
 	// package was imported completely and without errors

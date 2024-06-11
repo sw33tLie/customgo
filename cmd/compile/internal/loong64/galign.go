@@ -20,6 +20,4 @@ func Init(arch *ssagen.ArchInfo) {
 	arch.SSAMarkMoves = func(s *ssagen.State, b *ssa.Block) {}
 	arch.SSAGenValue = ssaGenValue
 	arch.SSAGenBlock = ssaGenBlock
-	arch.LoadRegResult = loadRegResult
-	arch.SpillArgReg = spillArgReg
 }

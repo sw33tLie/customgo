@@ -11,7 +11,6 @@ package runtime_test
 
 import (
 	"internal/abi"
-	"internal/runtime/atomic"
 	"internal/testenv"
 	"os"
 	"os/exec"
@@ -21,27 +20,19 @@ import (
 	"time"
 )
 
-var regConfirmRun atomic.Int32
+var regConfirmRun chan int
 
 //go:registerparams
-func regFinalizerPointer(v *TintPointer) (int, float32, [10]byte) {
-	regConfirmRun.Store(int32(*(*int)(v.p)))
+func regFinalizerPointer(v *Tint) (int, float32, [10]byte) {
+	regConfirmRun <- *(*int)(v)
 	return 5151, 4.0, [10]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
 }
 
 //go:registerparams
 func regFinalizerIface(v Tinter) (int, float32, [10]byte) {
-	regConfirmRun.Store(int32(*(*int)(v.(*TintPointer).p)))
+	regConfirmRun <- *(*int)(v.(*Tint))
 	return 5151, 4.0, [10]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
 }
-
-// TintPointer has a pointer member to make sure that it isn't allocated by the
-// tiny allocator, so we know when its finalizer will run
-type TintPointer struct {
-	p *Tint
-}
-
-func (*TintPointer) m() {}
 
 func TestFinalizerRegisterABI(t *testing.T) {
 	testenv.MustHaveExec(t)
@@ -49,7 +40,7 @@ func TestFinalizerRegisterABI(t *testing.T) {
 	// Actually run the test in a subprocess because we don't want
 	// finalizers from other tests interfering.
 	if os.Getenv("TEST_FINALIZER_REGABI") != "1" {
-		cmd := testenv.CleanCmdEnv(exec.Command(os.Args[0], "-test.run=^TestFinalizerRegisterABI$", "-test.v"))
+		cmd := testenv.CleanCmdEnv(exec.Command(os.Args[0], "-test.run=TestFinalizerRegisterABI", "-test.v"))
 		cmd.Env = append(cmd.Env, "TEST_FINALIZER_REGABI=1")
 		out, err := cmd.CombinedOutput()
 		if !strings.Contains(string(out), "PASS\n") || err != nil {
@@ -96,8 +87,10 @@ func TestFinalizerRegisterABI(t *testing.T) {
 	for i := range tests {
 		test := &tests[i]
 		t.Run(test.name, func(t *testing.T) {
-			x := &TintPointer{p: new(Tint)}
-			*x.p = (Tint)(test.confirmValue)
+			regConfirmRun = make(chan int)
+
+			x := new(Tint)
+			*x = (Tint)(test.confirmValue)
 			runtime.SetFinalizer(x, test.fin)
 
 			runtime.KeepAlive(x)
@@ -106,11 +99,13 @@ func TestFinalizerRegisterABI(t *testing.T) {
 			runtime.GC()
 			runtime.GC()
 
-			if !runtime.BlockUntilEmptyFinalizerQueue(int64(time.Second)) {
+			select {
+			case <-time.After(time.Second):
 				t.Fatal("finalizer failed to execute")
-			}
-			if got := int(regConfirmRun.Load()); got != test.confirmValue {
-				t.Fatalf("wrong finalizer executed? got %d, want %d", got, test.confirmValue)
+			case gotVal := <-regConfirmRun:
+				if gotVal != test.confirmValue {
+					t.Fatalf("wrong finalizer executed? got %d, want %d", gotVal, test.confirmValue)
+				}
 			}
 		})
 	}

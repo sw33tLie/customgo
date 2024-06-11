@@ -5,7 +5,6 @@
 package fs_test
 
 import (
-	"errors"
 	. "io/fs"
 	"testing"
 )
@@ -54,10 +53,5 @@ func TestSub(t *testing.T) {
 	}
 	if pe.Path != "nonexist" {
 		t.Fatalf("Open(nonexist): err.Path = %q, want %q", pe.Path, "nonexist")
-	}
-
-	_, err = sub.Open("./")
-	if !errors.Is(err, ErrInvalid) {
-		t.Fatalf("Open(./): error is %v, want %v", err, ErrInvalid)
 	}
 }

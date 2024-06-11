@@ -7,7 +7,7 @@
 package runtime
 
 import (
-	"internal/runtime/atomic"
+	"runtime/internal/atomic"
 	"unsafe"
 )
 
@@ -31,10 +31,6 @@ const (
 	passive_spin    = 1
 )
 
-func mutexContended(l *mutex) bool {
-	return atomic.Loaduintptr(&l.key) > locked
-}
-
 func lock(l *mutex) {
 	lockWithRank(l, getLockRank(l))
 }
@@ -52,8 +48,6 @@ func lock2(l *mutex) {
 	}
 	semacreate(gp.m)
 
-	timer := &lockTimer{lock: l}
-	timer.begin()
 	// On uniprocessor's, no point spinning.
 	// On multiprocessors, spin for ACTIVE_SPIN attempts.
 	spin := 0
@@ -66,7 +60,6 @@ Loop:
 		if v&locked == 0 {
 			// Unlocked. Try to lock.
 			if atomic.Casuintptr(&l.key, v, v|locked) {
-				timer.end()
 				return
 			}
 			i = 0
@@ -126,7 +119,6 @@ func unlock2(l *mutex) {
 			}
 		}
 	}
-	gp.m.mLockProfile.recordUnlock(l)
 	gp.m.locks--
 	if gp.m.locks < 0 {
 		throw("runtime·unlock: lock count")
@@ -138,7 +130,13 @@ func unlock2(l *mutex) {
 
 // One-time notifications.
 func noteclear(n *note) {
-	n.key = 0
+	if GOOS == "aix" {
+		// On AIX, semaphores might not synchronize the memory in some
+		// rare cases. See issue #30189.
+		atomic.Storeuintptr(&n.key, 0)
+	} else {
+		n.key = 0
+	}
 }
 
 func notewakeup(n *note) {

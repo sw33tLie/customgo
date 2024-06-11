@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build !windows
+//go:build !js && !windows
 
 // Read system DNS config from /etc/resolv.conf
 
@@ -10,7 +10,6 @@ package net
 
 import (
 	"internal/bytealg"
-	"internal/stringslite"
 	"net/netip"
 	"time"
 )
@@ -76,7 +75,7 @@ func dnsReadConfig(filename string) *dnsConfig {
 		case "options": // magic options
 			for _, s := range f[1:] {
 				switch {
-				case stringslite.HasPrefix(s, "ndots:"):
+				case hasPrefix(s, "ndots:"):
 					n, _, _ := dtoi(s[6:])
 					if n < 0 {
 						n = 0
@@ -84,13 +83,13 @@ func dnsReadConfig(filename string) *dnsConfig {
 						n = 15
 					}
 					conf.ndots = n
-				case stringslite.HasPrefix(s, "timeout:"):
+				case hasPrefix(s, "timeout:"):
 					n, _, _ := dtoi(s[8:])
 					if n < 1 {
 						n = 1
 					}
 					conf.timeout = time.Duration(n) * time.Second
-				case stringslite.HasPrefix(s, "attempts:"):
+				case hasPrefix(s, "attempts:"):
 					n, _, _ := dtoi(s[9:])
 					if n < 1 {
 						n = 1
@@ -154,6 +153,10 @@ func dnsDefaultSearch() []string {
 		return []string{ensureRooted(hn[i+1:])}
 	}
 	return nil
+}
+
+func hasPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
 
 func ensureRooted(s string) string {

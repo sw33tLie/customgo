@@ -96,7 +96,6 @@ import (
 	"os/exec"
 	"os/signal"
 
-	"cmd/internal/telemetry"
 	"cmd/internal/test2json"
 )
 
@@ -116,12 +115,8 @@ func ignoreSignals() {
 }
 
 func main() {
-	telemetry.Start()
-
 	flag.Usage = usage
 	flag.Parse()
-	telemetry.Inc("test2json/invocations")
-	telemetry.CountFlags("test2json/flag:", *flag.CommandLine)
 
 	var mode test2json.Mode
 	if *flagT {

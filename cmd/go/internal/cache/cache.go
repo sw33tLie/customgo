@@ -159,22 +159,22 @@ var DebugTest = false
 func init() { initEnv() }
 
 var (
-	gocacheverify = godebug.New("gocacheverify")
-	gocachehash   = godebug.New("gocachehash")
-	gocachetest   = godebug.New("gocachetest")
+	goCacheVerify = godebug.New("gocacheverify")
+	goDebugHash   = godebug.New("gocachehash")
+	goCacheTest   = godebug.New("gocachetest")
 )
 
 func initEnv() {
-	if gocacheverify.Value() == "1" {
-		gocacheverify.IncNonDefault()
+	if goCacheVerify.Value() == "1" {
+		goCacheVerify.IncNonDefault()
 		verify = true
 	}
-	if gocachehash.Value() == "1" {
-		gocachehash.IncNonDefault()
+	if goDebugHash.Value() == "1" {
+		goDebugHash.IncNonDefault()
 		debugHash = true
 	}
-	if gocachetest.Value() == "1" {
-		gocachetest.IncNonDefault()
+	if goCacheTest.Value() == "1" {
+		goCacheTest.IncNonDefault()
 		DebugTest = true
 	}
 }
@@ -477,7 +477,7 @@ func (c *DiskCache) putIndexEntry(id ActionID, out OutputID, size int64, allowVe
 	return nil
 }
 
-// noVerifyReadSeeker is an io.ReadSeeker wrapper sentinel type
+// noVerifyReadSeeker is a io.ReadSeeker wrapper sentinel type
 // that says that Cache.Put should skip the verify check
 // (from GODEBUG=goverifycache=1).
 type noVerifyReadSeeker struct {

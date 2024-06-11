@@ -6,7 +6,6 @@ package filepath
 
 import (
 	"errors"
-	"internal/filepathlite"
 	"io/fs"
 	"os"
 	"runtime"
@@ -14,7 +13,7 @@ import (
 )
 
 func walkSymlinks(path string) (string, error) {
-	volLen := filepathlite.VolumeNameLen(path)
+	volLen := volumeNameLen(path)
 	pathSeparator := string(os.PathSeparator)
 
 	if volLen < len(path) && os.IsPathSeparator(path[volLen]) {
@@ -35,7 +34,7 @@ func walkSymlinks(path string) (string, error) {
 		// On Windows, "." can be a symlink.
 		// We look it up, and use the value if it is absolute.
 		// If not, we just return ".".
-		isWindowsDot := runtime.GOOS == "windows" && path[filepathlite.VolumeNameLen(path):] == "."
+		isWindowsDot := runtime.GOOS == "windows" && path[volumeNameLen(path):] == "."
 
 		// The next path component is in path[start:end].
 		if end == start {
@@ -74,7 +73,7 @@ func walkSymlinks(path string) (string, error) {
 
 		// Ordinary path component. Add it to result.
 
-		if len(dest) > filepathlite.VolumeNameLen(dest) && !os.IsPathSeparator(dest[len(dest)-1]) {
+		if len(dest) > volumeNameLen(dest) && !os.IsPathSeparator(dest[len(dest)-1]) {
 			dest += pathSeparator
 		}
 
@@ -114,7 +113,7 @@ func walkSymlinks(path string) (string, error) {
 
 		path = link + path[end:]
 
-		v := filepathlite.VolumeNameLen(link)
+		v := volumeNameLen(link)
 		if v > 0 {
 			// Symlink to drive name is an absolute path.
 			if v < len(link) && os.IsPathSeparator(link[v]) {

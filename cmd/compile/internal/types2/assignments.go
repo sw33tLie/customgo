@@ -24,10 +24,7 @@ func (check *Checker) assignment(x *operand, T Type, context string) {
 	switch x.mode {
 	case invalid:
 		return // error reported before
-	case nilvalue:
-		assert(isTypes2)
-		// ok
-	case constant_, variable, mapindex, value, commaok, commaerr:
+	case constant_, variable, mapindex, value, nilvalue, commaok, commaerr:
 		// ok
 	default:
 		// we may get here because of other problems (go.dev/issue/39634, crash 12)
@@ -44,25 +41,14 @@ func (check *Checker) assignment(x *operand, T Type, context string) {
 		// bool, rune, int, float64, complex128 or string respectively, depending
 		// on whether the value is a boolean, rune, integer, floating-point,
 		// complex, or string constant."
-		if isTypes2 {
-			if x.isNil() {
-				if T == nil {
-					check.errorf(x, UntypedNilUse, "use of untyped nil in %s", context)
-					x.mode = invalid
-					return
-				}
-			} else if T == nil || isNonTypeParamInterface(T) {
-				target = Default(x.typ)
+		if x.isNil() {
+			if T == nil {
+				check.errorf(x, UntypedNilUse, "use of untyped nil in %s", context)
+				x.mode = invalid
+				return
 			}
-		} else { // go/types
-			if T == nil || isNonTypeParamInterface(T) {
-				if T == nil && x.typ == Typ[UntypedNil] {
-					check.errorf(x, UntypedNilUse, "use of untyped nil in %s", context)
-					x.mode = invalid
-					return
-				}
-				target = Default(x.typ)
-			}
+		} else if T == nil || isNonTypeParamInterface(T) {
+			target = Default(x.typ)
 		}
 		newType, val, code := check.implicitTypeAndValue(x, target)
 		if code != 0 {
@@ -116,7 +102,7 @@ func (check *Checker) assignment(x *operand, T Type, context string) {
 }
 
 func (check *Checker) initConst(lhs *Const, x *operand) {
-	if x.mode == invalid || !isValid(x.typ) || !isValid(lhs.typ) {
+	if x.mode == invalid || x.typ == Typ[Invalid] || lhs.typ == Typ[Invalid] {
 		if lhs.typ == nil {
 			lhs.typ = Typ[Invalid]
 		}
@@ -151,7 +137,7 @@ func (check *Checker) initConst(lhs *Const, x *operand) {
 // or Typ[Invalid] in case of an error.
 // If the initialization check fails, x.mode is set to invalid.
 func (check *Checker) initVar(lhs *Var, x *operand, context string) {
-	if x.mode == invalid || !isValid(x.typ) || !isValid(lhs.typ) {
+	if x.mode == invalid || x.typ == Typ[Invalid] || lhs.typ == Typ[Invalid] {
 		if lhs.typ == nil {
 			lhs.typ = Typ[Invalid]
 		}
@@ -184,7 +170,7 @@ func (check *Checker) initVar(lhs *Var, x *operand, context string) {
 // and Typ[Invalid] if it is an invalid lhs expression.
 func (check *Checker) lhsVar(lhs syntax.Expr) Type {
 	// Determine if the lhs is a (possibly parenthesized) identifier.
-	ident, _ := syntax.Unparen(lhs).(*syntax.Name)
+	ident, _ := unparen(lhs).(*syntax.Name)
 
 	// Don't evaluate lhs if it is the blank identifier.
 	if ident != nil && ident.Value == "_" {
@@ -216,7 +202,7 @@ func (check *Checker) lhsVar(lhs syntax.Expr) Type {
 		v.used = v_used // restore v.used
 	}
 
-	if x.mode == invalid || !isValid(x.typ) {
+	if x.mode == invalid || x.typ == Typ[Invalid] {
 		return Typ[Invalid]
 	}
 
@@ -232,7 +218,7 @@ func (check *Checker) lhsVar(lhs syntax.Expr) Type {
 			var op operand
 			check.expr(nil, &op, sel.X)
 			if op.mode == mapindex {
-				check.errorf(&x, UnaddressableFieldAssign, "cannot assign to struct field %s in map", ExprString(x.expr))
+				check.errorf(&x, UnaddressableFieldAssign, "cannot assign to struct field %s in map", syntax.String(x.expr))
 				return Typ[Invalid]
 			}
 		}
@@ -246,9 +232,9 @@ func (check *Checker) lhsVar(lhs syntax.Expr) Type {
 // assignVar checks the assignment lhs = rhs (if x == nil), or lhs = x (if x != nil).
 // If x != nil, it must be the evaluation of rhs (and rhs will be ignored).
 // If the assignment check fails and x != nil, x.mode is set to invalid.
-func (check *Checker) assignVar(lhs, rhs syntax.Expr, x *operand, context string) {
+func (check *Checker) assignVar(lhs, rhs syntax.Expr, x *operand) {
 	T := check.lhsVar(lhs) // nil if lhs is _
-	if !isValid(T) {
+	if T == Typ[Invalid] {
 		if x != nil {
 			x.mode = invalid
 		} else {
@@ -258,18 +244,12 @@ func (check *Checker) assignVar(lhs, rhs syntax.Expr, x *operand, context string
 	}
 
 	if x == nil {
-		var target *target
-		// avoid calling ExprString if not needed
-		if T != nil {
-			if _, ok := under(T).(*Signature); ok {
-				target = newTarget(T, ExprString(lhs))
-			}
-		}
 		x = new(operand)
-		check.expr(target, x, rhs)
+		check.expr(T, x, rhs)
 	}
 
-	if T == nil && context == "assignment" {
+	context := "assignment"
+	if T == nil {
 		context = "assignment to _ identifier"
 	}
 	check.assignment(x, T, context)
@@ -302,7 +282,7 @@ func (check *Checker) typesSummary(list []Type, variadic bool) string {
 		switch {
 		case t == nil:
 			fallthrough // should not happen but be cautious
-		case !isValid(t):
+		case t == Typ[Invalid]:
 			s = "unknown type"
 		case isUntyped(t):
 			if isNumeric(t) {
@@ -340,7 +320,7 @@ func (check *Checker) assignError(rhs []syntax.Expr, l, r int) {
 	rhs0 := rhs[0]
 
 	if len(rhs) == 1 {
-		if call, _ := syntax.Unparen(rhs0).(*syntax.CallExpr); call != nil {
+		if call, _ := unparen(rhs0).(*syntax.CallExpr); call != nil {
 			check.errorf(rhs0, WrongAssignCount, "assignment mismatch: %s but %s returns %s", vars, call.Fun, vals)
 			return
 		}
@@ -357,11 +337,12 @@ func (check *Checker) returnError(at poser, lhs []*Var, rhs []*operand) {
 	} else if r > 0 {
 		at = rhs[r-1] // report at last value
 	}
-	err := check.newError(WrongResultCount)
-	err.addf(at, "%s return values", qualifier)
-	err.addf(nopos, "have %s", check.typesSummary(operandTypes(rhs), false))
-	err.addf(nopos, "want %s", check.typesSummary(varTypes(lhs), false))
-	err.report()
+	var err error_
+	err.code = WrongResultCount
+	err.errorf(at, "%s return values", qualifier)
+	err.errorf(nopos, "have %s", check.typesSummary(operandTypes(rhs), false))
+	err.errorf(nopos, "want %s", check.typesSummary(varTypes(lhs), false))
+	check.report(&err)
 }
 
 // initVars type-checks assignments of initialization expressions orig_rhs
@@ -380,7 +361,7 @@ func (check *Checker) initVars(lhs []*Var, orig_rhs []syntax.Expr, returnStmt sy
 	// error message don't handle it as n:n mapping below.
 	isCall := false
 	if r == 1 {
-		_, isCall = syntax.Unparen(orig_rhs[0]).(*syntax.CallExpr)
+		_, isCall = unparen(orig_rhs[0]).(*syntax.CallExpr)
 	}
 
 	// If we have a n:n mapping from lhs variable to rhs expression,
@@ -388,11 +369,7 @@ func (check *Checker) initVars(lhs []*Var, orig_rhs []syntax.Expr, returnStmt sy
 	if l == r && !isCall {
 		var x operand
 		for i, lhs := range lhs {
-			desc := lhs.name
-			if returnStmt != nil && desc == "" {
-				desc = "result variable"
-			}
-			check.expr(newTarget(lhs.typ, desc), &x, orig_rhs[i])
+			check.expr(lhs.typ, &x, orig_rhs[i])
 			check.initVar(lhs, &x, context)
 		}
 		return
@@ -459,14 +436,14 @@ func (check *Checker) assignVars(lhs, orig_rhs []syntax.Expr) {
 	// error message don't handle it as n:n mapping below.
 	isCall := false
 	if r == 1 {
-		_, isCall = syntax.Unparen(orig_rhs[0]).(*syntax.CallExpr)
+		_, isCall = unparen(orig_rhs[0]).(*syntax.CallExpr)
 	}
 
 	// If we have a n:n mapping from lhs variable to rhs expression,
 	// each value can be assigned to its corresponding variable.
 	if l == r && !isCall {
 		for i, lhs := range lhs {
-			check.assignVar(lhs, orig_rhs[i], nil, "assignment")
+			check.assignVar(lhs, orig_rhs[i], nil)
 		}
 		return
 	}
@@ -487,7 +464,7 @@ func (check *Checker) assignVars(lhs, orig_rhs []syntax.Expr) {
 	r = len(rhs)
 	if l == r {
 		for i, lhs := range lhs {
-			check.assignVar(lhs, nil, rhs[i], "assignment")
+			check.assignVar(lhs, nil, rhs[i])
 		}
 		// Only record comma-ok expression if both assignments succeeded
 		// (go.dev/issue/59371).
@@ -506,7 +483,22 @@ func (check *Checker) assignVars(lhs, orig_rhs []syntax.Expr) {
 	// orig_rhs[0] was already evaluated
 }
 
-func (check *Checker) shortVarDecl(pos poser, lhs, rhs []syntax.Expr) {
+// unpackExpr unpacks a *syntax.ListExpr into a list of syntax.Expr.
+// Helper introduced for the go/types -> types2 port.
+// TODO(gri) Should find a more efficient solution that doesn't
+// require introduction of a new slice for simple
+// expressions.
+func unpackExpr(x syntax.Expr) []syntax.Expr {
+	if x, _ := x.(*syntax.ListExpr); x != nil {
+		return x.ElemList
+	}
+	if x != nil {
+		return []syntax.Expr{x}
+	}
+	return nil
+}
+
+func (check *Checker) shortVarDecl(pos syntax.Pos, lhs, rhs []syntax.Expr) {
 	top := len(check.delayed)
 	scope := check.scope
 
@@ -519,7 +511,6 @@ func (check *Checker) shortVarDecl(pos poser, lhs, rhs []syntax.Expr) {
 		ident, _ := lhs.(*syntax.Name)
 		if ident == nil {
 			check.useLHS(lhs)
-			// TODO(gri) This is redundant with a go/parser error. Consider omitting in go/types?
 			check.errorf(lhs, BadDecl, "non-name %s on left side of :=", lhs)
 			hasErr = true
 			continue
@@ -582,7 +573,7 @@ func (check *Checker) shortVarDecl(pos poser, lhs, rhs []syntax.Expr) {
 	// a function begins at the end of the ConstSpec or VarSpec (ShortVarDecl
 	// for short variable declarations) and ends at the end of the innermost
 	// containing block."
-	scopePos := endPos(rhs[len(rhs)-1])
+	scopePos := syntax.EndPos(rhs[len(rhs)-1])
 	for _, obj := range newVars {
 		check.declare(scope, nil, obj, scopePos) // id = nil: recordDef already called
 	}

@@ -4,8 +4,6 @@
 //
 // ARM version of md5block.go
 
-//go:build !purego
-
 #include "textflag.h"
 
 // Register definitions

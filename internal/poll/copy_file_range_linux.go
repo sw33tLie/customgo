@@ -10,20 +10,27 @@ import (
 	"syscall"
 )
 
-var isKernelVersionGE53 = sync.OnceValue(func() bool {
-	major, minor := unix.KernelVersion()
-	// copy_file_range(2) is broken in various ways on kernels older than 5.3,
-	// see https://go.dev/issue/42400 and
-	// https://man7.org/linux/man-pages/man2/copy_file_range.2.html#VERSIONS
-	return major > 5 || (major == 5 && minor >= 3)
-})
+var (
+	kernelVersion53Once sync.Once
+	kernelVersion53     bool
+)
 
 const maxCopyFileRangeRound = 1 << 30
 
 // CopyFileRange copies at most remain bytes of data from src to dst, using
 // the copy_file_range system call. dst and src must refer to regular files.
 func CopyFileRange(dst, src *FD, remain int64) (written int64, handled bool, err error) {
-	if !isKernelVersionGE53() {
+	kernelVersion53Once.Do(func() {
+		major, minor := unix.KernelVersion()
+		// copy_file_range(2) is broken in various ways on kernels older than 5.3,
+		// see issue #42400 and
+		// https://man7.org/linux/man-pages/man2/copy_file_range.2.html#VERSIONS
+		if major > 5 || (major == 5 && minor >= 3) {
+			kernelVersion53 = true
+		}
+	})
+
+	if !kernelVersion53 {
 		return 0, false, nil
 	}
 

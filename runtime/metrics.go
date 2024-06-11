@@ -95,77 +95,77 @@ func initMetrics() {
 			deps: makeStatDepSet(cpuStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(in.cpuStats.GCAssistTime))
+				out.scalar = float64bits(nsToSec(in.cpuStats.gcAssistTime))
 			},
 		},
 		"/cpu/classes/gc/mark/dedicated:cpu-seconds": {
 			deps: makeStatDepSet(cpuStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(in.cpuStats.GCDedicatedTime))
+				out.scalar = float64bits(nsToSec(in.cpuStats.gcDedicatedTime))
 			},
 		},
 		"/cpu/classes/gc/mark/idle:cpu-seconds": {
 			deps: makeStatDepSet(cpuStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(in.cpuStats.GCIdleTime))
+				out.scalar = float64bits(nsToSec(in.cpuStats.gcIdleTime))
 			},
 		},
 		"/cpu/classes/gc/pause:cpu-seconds": {
 			deps: makeStatDepSet(cpuStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(in.cpuStats.GCPauseTime))
+				out.scalar = float64bits(nsToSec(in.cpuStats.gcPauseTime))
 			},
 		},
 		"/cpu/classes/gc/total:cpu-seconds": {
 			deps: makeStatDepSet(cpuStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(in.cpuStats.GCTotalTime))
+				out.scalar = float64bits(nsToSec(in.cpuStats.gcTotalTime))
 			},
 		},
 		"/cpu/classes/idle:cpu-seconds": {
 			deps: makeStatDepSet(cpuStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(in.cpuStats.IdleTime))
+				out.scalar = float64bits(nsToSec(in.cpuStats.idleTime))
 			},
 		},
 		"/cpu/classes/scavenge/assist:cpu-seconds": {
 			deps: makeStatDepSet(cpuStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(in.cpuStats.ScavengeAssistTime))
+				out.scalar = float64bits(nsToSec(in.cpuStats.scavengeAssistTime))
 			},
 		},
 		"/cpu/classes/scavenge/background:cpu-seconds": {
 			deps: makeStatDepSet(cpuStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(in.cpuStats.ScavengeBgTime))
+				out.scalar = float64bits(nsToSec(in.cpuStats.scavengeBgTime))
 			},
 		},
 		"/cpu/classes/scavenge/total:cpu-seconds": {
 			deps: makeStatDepSet(cpuStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(in.cpuStats.ScavengeTotalTime))
+				out.scalar = float64bits(nsToSec(in.cpuStats.scavengeTotalTime))
 			},
 		},
 		"/cpu/classes/total:cpu-seconds": {
 			deps: makeStatDepSet(cpuStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(in.cpuStats.TotalTime))
+				out.scalar = float64bits(nsToSec(in.cpuStats.totalTime))
 			},
 		},
 		"/cpu/classes/user:cpu-seconds": {
 			deps: makeStatDepSet(cpuStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(in.cpuStats.UserTime))
+				out.scalar = float64bits(nsToSec(in.cpuStats.userTime))
 			},
 		},
 		"/gc/cycles/automatic:gc-cycles": {
@@ -190,28 +190,24 @@ func initMetrics() {
 			},
 		},
 		"/gc/scan/globals:bytes": {
-			deps: makeStatDepSet(gcStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindUint64
 				out.scalar = in.gcStats.globalsScan
 			},
 		},
 		"/gc/scan/heap:bytes": {
-			deps: makeStatDepSet(gcStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindUint64
 				out.scalar = in.gcStats.heapScan
 			},
 		},
 		"/gc/scan/stack:bytes": {
-			deps: makeStatDepSet(gcStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindUint64
 				out.scalar = in.gcStats.stackScan
 			},
 		},
 		"/gc/scan/total:bytes": {
-			deps: makeStatDepSet(gcStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindUint64
 				out.scalar = in.gcStats.totalScan
@@ -221,11 +217,11 @@ func initMetrics() {
 			deps: makeStatDepSet(heapStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				hist := out.float64HistOrInit(sizeClassBuckets)
-				hist.counts[len(hist.counts)-1] = in.heapStats.largeAllocCount
+				hist.counts[len(hist.counts)-1] = uint64(in.heapStats.largeAllocCount)
 				// Cut off the first index which is ostensibly for size class 0,
 				// but large objects are tracked separately so it's actually unused.
 				for i, count := range in.heapStats.smallAllocCount[1:] {
-					hist.counts[i] = count
+					hist.counts[i] = uint64(count)
 				}
 			},
 		},
@@ -247,11 +243,11 @@ func initMetrics() {
 			deps: makeStatDepSet(heapStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				hist := out.float64HistOrInit(sizeClassBuckets)
-				hist.counts[len(hist.counts)-1] = in.heapStats.largeFreeCount
+				hist.counts[len(hist.counts)-1] = uint64(in.heapStats.largeFreeCount)
 				// Cut off the first index which is ostensibly for size class 0,
 				// but large objects are tracked separately so it's actually unused.
 				for i, count := range in.heapStats.smallFreeCount[1:] {
-					hist.counts[i] = count
+					hist.counts[i] = uint64(count)
 				}
 			},
 		},
@@ -306,7 +302,7 @@ func initMetrics() {
 			deps: makeStatDepSet(heapStatsDep),
 			compute: func(in *statAggregate, out *metricValue) {
 				out.kind = metricKindUint64
-				out.scalar = in.heapStats.tinyAllocCount
+				out.scalar = uint64(in.heapStats.tinyAllocCount)
 			},
 		},
 		"/gc/limiter/last-enabled:gc-cycle": {
@@ -317,8 +313,15 @@ func initMetrics() {
 		},
 		"/gc/pauses:seconds": {
 			compute: func(_ *statAggregate, out *metricValue) {
-				// N.B. this is identical to /sched/pauses/total/gc:seconds.
-				sched.stwTotalTimeGC.write(out)
+				hist := out.float64HistOrInit(timeHistBuckets)
+				// The bottom-most bucket, containing negative values, is tracked
+				// as a separately as underflow, so fill that in manually and then
+				// iterate over the rest.
+				hist.counts[0] = memstats.gcPauseDist.underflow.Load()
+				for i := range memstats.gcPauseDist.counts {
+					hist.counts[i+1] = memstats.gcPauseDist.counts[i].Load()
+				}
+				hist.counts[len(hist.counts)-1] = memstats.gcPauseDist.overflow.Load()
 			},
 		},
 		"/gc/stack/starting-size:bytes": {
@@ -444,33 +447,18 @@ func initMetrics() {
 		},
 		"/sched/latencies:seconds": {
 			compute: func(_ *statAggregate, out *metricValue) {
-				sched.timeToRun.write(out)
-			},
-		},
-		"/sched/pauses/stopping/gc:seconds": {
-			compute: func(_ *statAggregate, out *metricValue) {
-				sched.stwStoppingTimeGC.write(out)
-			},
-		},
-		"/sched/pauses/stopping/other:seconds": {
-			compute: func(_ *statAggregate, out *metricValue) {
-				sched.stwStoppingTimeOther.write(out)
-			},
-		},
-		"/sched/pauses/total/gc:seconds": {
-			compute: func(_ *statAggregate, out *metricValue) {
-				sched.stwTotalTimeGC.write(out)
-			},
-		},
-		"/sched/pauses/total/other:seconds": {
-			compute: func(_ *statAggregate, out *metricValue) {
-				sched.stwTotalTimeOther.write(out)
+				hist := out.float64HistOrInit(timeHistBuckets)
+				hist.counts[0] = sched.timeToRun.underflow.Load()
+				for i := range sched.timeToRun.counts {
+					hist.counts[i+1] = sched.timeToRun.counts[i].Load()
+				}
+				hist.counts[len(hist.counts)-1] = sched.timeToRun.overflow.Load()
 			},
 		},
 		"/sync/mutex/wait/total:seconds": {
 			compute: func(_ *statAggregate, out *metricValue) {
 				out.kind = metricKindFloat64
-				out.scalar = float64bits(nsToSec(totalMutexWaitTimeNanos()))
+				out.scalar = float64bits(nsToSec(sched.totalMutexWaitTime.Load()))
 			},
 		},
 	}
@@ -679,7 +667,7 @@ func (a *cpuStatsAggregate) compute() {
 	// a.cpuStats.accumulate(nanotime(), gcphase == _GCmark)
 }
 
-// gcStatsAggregate represents various GC stats obtained from the runtime
+// cpuStatsAggregate represents various GC stats obtained from the runtime
 // acquired together to avoid skew and inconsistencies.
 type gcStatsAggregate struct {
 	heapScan    uint64
@@ -691,7 +679,7 @@ type gcStatsAggregate struct {
 // compute populates the gcStatsAggregate with values from the runtime.
 func (a *gcStatsAggregate) compute() {
 	a.heapScan = gcController.heapScan.Load()
-	a.stackScan = gcController.lastStackScan.Load()
+	a.stackScan = uint64(gcController.lastStackScan.Load())
 	a.globalsScan = gcController.globalsScan.Load()
 	a.totalScan = a.heapScan + a.stackScan + a.globalsScan
 }
@@ -831,24 +819,14 @@ func readMetricNames() []string {
 //
 //go:linkname readMetrics runtime/metrics.runtime_readMetrics
 func readMetrics(samplesp unsafe.Pointer, len int, cap int) {
+	// Construct a slice from the args.
+	sl := slice{samplesp, len, cap}
+	samples := *(*[]metricSample)(unsafe.Pointer(&sl))
+
 	metricsLock()
 
 	// Ensure the map is initialized.
 	initMetrics()
-
-	// Read the metrics.
-	readMetricsLocked(samplesp, len, cap)
-	metricsUnlock()
-}
-
-// readMetricsLocked is the internal, locked portion of readMetrics.
-//
-// Broken out for more robust testing. metricsLock must be held and
-// initMetrics must have been called already.
-func readMetricsLocked(samplesp unsafe.Pointer, len int, cap int) {
-	// Construct a slice from the args.
-	sl := slice{samplesp, len, cap}
-	samples := *(*[]metricSample)(unsafe.Pointer(&sl))
 
 	// Clear agg defensively.
 	agg = statAggregate{}
@@ -868,4 +846,6 @@ func readMetricsLocked(samplesp unsafe.Pointer, len int, cap int) {
 		// Compute the value based on the stats we have.
 		data.compute(&agg, &sample.value)
 	}
+
+	metricsUnlock()
 }

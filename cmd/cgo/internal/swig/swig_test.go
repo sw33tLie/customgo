@@ -44,18 +44,11 @@ func run(t *testing.T, dir string, lto bool, args ...string) {
 	cmd := exec.Command("go", runArgs...)
 	cmd.Dir = dir
 	if lto {
-		// On the builders we're using the default /usr/bin/ld, but
-		// that has problems when asking for LTO in particular. Force
-		// use of lld, which ships with our clang installation.
-		extraLDFlags := ""
-		if strings.Contains(testenv.Builder(), "clang") {
-			extraLDFlags += " -fuse-ld=lld"
-		}
 		const cflags = "-flto -Wno-lto-type-mismatch -Wno-unknown-warning-option"
 		cmd.Env = append(cmd.Environ(),
 			"CGO_CFLAGS="+cflags,
 			"CGO_CXXFLAGS="+cflags,
-			"CGO_LDFLAGS="+cflags+extraLDFlags)
+			"CGO_LDFLAGS="+cflags)
 	}
 	out, err := cmd.CombinedOutput()
 	if string(out) != "OK\n" {

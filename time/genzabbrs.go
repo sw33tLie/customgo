@@ -21,8 +21,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"slices"
-	"strings"
+	"sort"
 	"text/template"
 	"time"
 )
@@ -110,8 +109,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	slices.SortFunc(zs, func(a, b *zone) int {
-		return strings.Compare(a.UnixName, b.UnixName)
+	sort.Slice(zs, func(i, j int) bool {
+		return zs[i].UnixName < zs[j].UnixName
 	})
 	var v = struct {
 		URL string

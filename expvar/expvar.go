@@ -4,8 +4,7 @@
 
 // Package expvar provides a standardized interface to public variables, such
 // as operation counters in servers. It exposes these variables via HTTP at
-// /debug/vars in JSON format. As of Go 1.22, the /debug/vars request must
-// use GET.
+// /debug/vars in JSON format.
 //
 // Operations to set or modify these public variables are atomic.
 //
@@ -24,17 +23,17 @@ package expvar
 
 import (
 	"encoding/json"
-	"internal/godebug"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"os"
 	"runtime"
-	"slices"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"unicode/utf8"
 )
 
 // Var is an abstract type for all exported variables.
@@ -45,37 +44,28 @@ type Var interface {
 	String() string
 }
 
-type jsonVar interface {
-	// appendJSON appends the JSON representation of the receiver to b.
-	appendJSON(b []byte) []byte
-}
-
-// Int is a 64-bit integer variable that satisfies the [Var] interface.
+// Int is a 64-bit integer variable that satisfies the Var interface.
 type Int struct {
-	i atomic.Int64
+	i int64
 }
 
 func (v *Int) Value() int64 {
-	return v.i.Load()
+	return atomic.LoadInt64(&v.i)
 }
 
 func (v *Int) String() string {
-	return string(v.appendJSON(nil))
-}
-
-func (v *Int) appendJSON(b []byte) []byte {
-	return strconv.AppendInt(b, v.i.Load(), 10)
+	return strconv.FormatInt(atomic.LoadInt64(&v.i), 10)
 }
 
 func (v *Int) Add(delta int64) {
-	v.i.Add(delta)
+	atomic.AddInt64(&v.i, delta)
 }
 
 func (v *Int) Set(value int64) {
-	v.i.Store(value)
+	atomic.StoreInt64(&v.i, value)
 }
 
-// Float is a 64-bit float variable that satisfies the [Var] interface.
+// Float is a 64-bit float variable that satisfies the Var interface.
 type Float struct {
 	f atomic.Uint64
 }
@@ -85,11 +75,8 @@ func (v *Float) Value() float64 {
 }
 
 func (v *Float) String() string {
-	return string(v.appendJSON(nil))
-}
-
-func (v *Float) appendJSON(b []byte) []byte {
-	return strconv.AppendFloat(b, math.Float64frombits(v.f.Load()), 'g', -1, 64)
+	return strconv.FormatFloat(
+		math.Float64frombits(v.f.Load()), 'g', -1, 64)
 }
 
 // Add adds delta to v.
@@ -110,58 +97,37 @@ func (v *Float) Set(value float64) {
 	v.f.Store(math.Float64bits(value))
 }
 
-// Map is a string-to-Var map variable that satisfies the [Var] interface.
+// Map is a string-to-Var map variable that satisfies the Var interface.
 type Map struct {
 	m      sync.Map // map[string]Var
 	keysMu sync.RWMutex
 	keys   []string // sorted
 }
 
-// KeyValue represents a single entry in a [Map].
+// KeyValue represents a single entry in a Map.
 type KeyValue struct {
 	Key   string
 	Value Var
 }
 
 func (v *Map) String() string {
-	return string(v.appendJSON(nil))
-}
-
-func (v *Map) appendJSON(b []byte) []byte {
-	return v.appendJSONMayExpand(b, false)
-}
-
-func (v *Map) appendJSONMayExpand(b []byte, expand bool) []byte {
-	afterCommaDelim := byte(' ')
-	mayAppendNewline := func(b []byte) []byte { return b }
-	if expand {
-		afterCommaDelim = '\n'
-		mayAppendNewline = func(b []byte) []byte { return append(b, '\n') }
-	}
-
-	b = append(b, '{')
-	b = mayAppendNewline(b)
+	var b strings.Builder
+	fmt.Fprintf(&b, "{")
 	first := true
 	v.Do(func(kv KeyValue) {
 		if !first {
-			b = append(b, ',', afterCommaDelim)
+			fmt.Fprintf(&b, ", ")
+		}
+		fmt.Fprintf(&b, "%q: ", kv.Key)
+		if kv.Value != nil {
+			fmt.Fprintf(&b, "%v", kv.Value)
+		} else {
+			fmt.Fprint(&b, "null")
 		}
 		first = false
-		b = appendJSONQuote(b, kv.Key)
-		b = append(b, ':', ' ')
-		switch v := kv.Value.(type) {
-		case nil:
-			b = append(b, "null"...)
-		case jsonVar:
-			b = v.appendJSON(b)
-		default:
-			b = append(b, v.String()...)
-		}
 	})
-	b = mayAppendNewline(b)
-	b = append(b, '}')
-	b = mayAppendNewline(b)
-	return b
+	fmt.Fprintf(&b, "}")
+	return b.String()
 }
 
 // Init removes all keys from the map.
@@ -169,7 +135,10 @@ func (v *Map) Init() *Map {
 	v.keysMu.Lock()
 	defer v.keysMu.Unlock()
 	v.keys = v.keys[:0]
-	v.m.Clear()
+	v.m.Range(func(k, _ any) bool {
+		v.m.Delete(k)
+		return true
+	})
 	return v
 }
 
@@ -178,11 +147,13 @@ func (v *Map) addKey(key string) {
 	v.keysMu.Lock()
 	defer v.keysMu.Unlock()
 	// Using insertion sort to place key into the already-sorted v.keys.
-	i, found := slices.BinarySearch(v.keys, key)
-	if found {
-		return
+	if i := sort.SearchStrings(v.keys, key); i >= len(v.keys) {
+		v.keys = append(v.keys, key)
+	} else if v.keys[i] != key {
+		v.keys = append(v.keys, "")
+		copy(v.keys[i+1:], v.keys[i:])
+		v.keys[i] = key
 	}
-	v.keys = slices.Insert(v.keys, i, key)
 }
 
 func (v *Map) Get(key string) Var {
@@ -205,7 +176,7 @@ func (v *Map) Set(key string, av Var) {
 	v.m.Store(key, av)
 }
 
-// Add adds delta to the *[Int] value stored under the given map key.
+// Add adds delta to the *Int value stored under the given map key.
 func (v *Map) Add(key string, delta int64) {
 	i, ok := v.m.Load(key)
 	if !ok {
@@ -222,7 +193,7 @@ func (v *Map) Add(key string, delta int64) {
 	}
 }
 
-// AddFloat adds delta to the *[Float] value stored under the given map key.
+// AddFloat adds delta to the *Float value stored under the given map key.
 func (v *Map) AddFloat(key string, delta float64) {
 	i, ok := v.m.Load(key)
 	if !ok {
@@ -243,9 +214,9 @@ func (v *Map) AddFloat(key string, delta float64) {
 func (v *Map) Delete(key string) {
 	v.keysMu.Lock()
 	defer v.keysMu.Unlock()
-	i, found := slices.BinarySearch(v.keys, key)
-	if found {
-		v.keys = slices.Delete(v.keys, i, i+1)
+	i := sort.SearchStrings(v.keys, key)
+	if i < len(v.keys) && key == v.keys[i] {
+		v.keys = append(v.keys[:i], v.keys[i+1:]...)
 		v.m.Delete(key)
 	}
 }
@@ -263,7 +234,7 @@ func (v *Map) Do(f func(KeyValue)) {
 	}
 }
 
-// String is a string variable, and satisfies the [Var] interface.
+// String is a string variable, and satisfies the Var interface.
 type String struct {
 	s atomic.Value // string
 }
@@ -273,21 +244,19 @@ func (v *String) Value() string {
 	return p
 }
 
-// String implements the [Var] interface. To get the unquoted string
-// use [String.Value].
+// String implements the Var interface. To get the unquoted string
+// use Value.
 func (v *String) String() string {
-	return string(v.appendJSON(nil))
-}
-
-func (v *String) appendJSON(b []byte) []byte {
-	return appendJSONQuote(b, v.Value())
+	s := v.Value()
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 func (v *String) Set(value string) {
 	v.s.Store(value)
 }
 
-// Func implements [Var] by calling the function
+// Func implements Var by calling the function
 // and formatting the returned value using JSON.
 type Func func() any
 
@@ -301,25 +270,31 @@ func (f Func) String() string {
 }
 
 // All published variables.
-var vars Map
+var (
+	vars      sync.Map // map[string]Var
+	varKeysMu sync.RWMutex
+	varKeys   []string // sorted
+)
 
 // Publish declares a named exported variable. This should be called from a
 // package's init function when it creates its Vars. If the name is already
 // registered then this will log.Panic.
 func Publish(name string, v Var) {
-	if _, dup := vars.m.LoadOrStore(name, v); dup {
+	if _, dup := vars.LoadOrStore(name, v); dup {
 		log.Panicln("Reuse of exported var name:", name)
 	}
-	vars.keysMu.Lock()
-	defer vars.keysMu.Unlock()
-	vars.keys = append(vars.keys, name)
-	slices.Sort(vars.keys)
+	varKeysMu.Lock()
+	defer varKeysMu.Unlock()
+	varKeys = append(varKeys, name)
+	sort.Strings(varKeys)
 }
 
 // Get retrieves a named exported variable. It returns nil if the name has
 // not been registered.
 func Get(name string) Var {
-	return vars.Get(name)
+	i, _ := vars.Load(name)
+	v, _ := i.(Var)
+	return v
 }
 
 // Convenience functions for creating new exported variables.
@@ -352,12 +327,26 @@ func NewString(name string) *String {
 // The global variable map is locked during the iteration,
 // but existing entries may be concurrently updated.
 func Do(f func(KeyValue)) {
-	vars.Do(f)
+	varKeysMu.RLock()
+	defer varKeysMu.RUnlock()
+	for _, k := range varKeys {
+		val, _ := vars.Load(k)
+		f(KeyValue{k, val.(Var)})
+	}
 }
 
 func expvarHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Write(vars.appendJSONMayExpand(nil, true))
+	fmt.Fprintf(w, "{\n")
+	first := true
+	Do(func(kv KeyValue) {
+		if !first {
+			fmt.Fprintf(w, ",\n")
+		}
+		first = false
+		fmt.Fprintf(w, "%q: %s", kv.Key, kv.Value)
+	})
+	fmt.Fprintf(w, "\n}\n")
 }
 
 // Handler returns the expvar HTTP Handler.
@@ -378,40 +367,7 @@ func memstats() any {
 }
 
 func init() {
-	if godebug.New("httpmuxgo121").Value() == "1" {
-		http.HandleFunc("/debug/vars", expvarHandler)
-	} else {
-		http.HandleFunc("GET /debug/vars", expvarHandler)
-	}
+	http.HandleFunc("/debug/vars", expvarHandler)
 	Publish("cmdline", Func(cmdline))
 	Publish("memstats", Func(memstats))
-}
-
-// TODO: Use json.appendString instead.
-func appendJSONQuote(b []byte, s string) []byte {
-	const hex = "0123456789abcdef"
-	b = append(b, '"')
-	for _, r := range s {
-		switch {
-		case r < ' ' || r == '\\' || r == '"' || r == '<' || r == '>' || r == '&' || r == '\u2028' || r == '\u2029':
-			switch r {
-			case '\\', '"':
-				b = append(b, '\\', byte(r))
-			case '\n':
-				b = append(b, '\\', 'n')
-			case '\r':
-				b = append(b, '\\', 'r')
-			case '\t':
-				b = append(b, '\\', 't')
-			default:
-				b = append(b, '\\', 'u', hex[(r>>12)&0xf], hex[(r>>8)&0xf], hex[(r>>4)&0xf], hex[(r>>0)&0xf])
-			}
-		case r < utf8.RuneSelf:
-			b = append(b, byte(r))
-		default:
-			b = utf8.AppendRune(b, r)
-		}
-	}
-	b = append(b, '"')
-	return b
 }

@@ -106,7 +106,7 @@ func printGoEnv(w io.Writer) {
 	env := envcmd.MkEnv()
 	env = append(env, envcmd.ExtraEnvVars()...)
 	env = append(env, envcmd.ExtraEnvVarsCostly()...)
-	envcmd.PrintEnv(w, env, false)
+	envcmd.PrintEnv(w, env)
 }
 
 func printGoDetails(w io.Writer) {

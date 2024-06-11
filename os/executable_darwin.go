@@ -4,12 +4,8 @@
 
 package os
 
-import (
-	"errors"
-	_ "unsafe" // for linkname
-)
+import "errors"
 
-//go:linkname executablePath
 var executablePath string // set by ../runtime/os_darwin.go
 
 var initCwd, initCwdErr = Getwd()

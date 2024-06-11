@@ -9,10 +9,7 @@
 // of the use of BoringCrypto.
 package fipstls
 
-import (
-	"internal/stringslite"
-	"sync/atomic"
-)
+import "sync/atomic"
 
 var required atomic.Bool
 
@@ -36,7 +33,7 @@ func Abandon() {
 	// and empty string for Windows (where runtime_arg0 can't easily find the name).
 	// Since this is an internal package, testing that this isn't used on the
 	// other operating systems should suffice to catch any mistakes.
-	if !stringslite.HasSuffix(name, "_test") && !stringslite.HasSuffix(name, ".test") && name != "NaClMain" && name != "" {
+	if !hasSuffix(name, "_test") && !hasSuffix(name, ".test") && name != "NaClMain" && name != "" {
 		panic("fipstls: invalid use of Abandon in " + name)
 	}
 	required.Store(false)
@@ -44,6 +41,10 @@ func Abandon() {
 
 // provided by runtime
 func runtime_arg0() string
+
+func hasSuffix(s, t string) bool {
+	return len(s) > len(t) && s[len(s)-len(t):] == t
+}
 
 // Required reports whether FIPS-approved settings are required.
 func Required() bool {

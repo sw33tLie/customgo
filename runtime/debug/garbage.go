@@ -6,7 +6,7 @@ package debug
 
 import (
 	"runtime"
-	"slices"
+	"sort"
 	"time"
 )
 
@@ -63,13 +63,15 @@ func ReadGCStats(stats *GCStats) {
 
 	if len(stats.PauseQuantiles) > 0 {
 		if n == 0 {
-			clear(stats.PauseQuantiles)
+			for i := range stats.PauseQuantiles {
+				stats.PauseQuantiles[i] = 0
+			}
 		} else {
 			// There's room for a second copy of the data in stats.Pause.
 			// See the allocation at the top of the function.
 			sorted := stats.Pause[n : n+n]
 			copy(sorted, stats.Pause)
-			slices.Sort(sorted)
+			sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 			nq := len(stats.PauseQuantiles) - 1
 			for i := 0; i < nq; i++ {
 				stats.PauseQuantiles[i] = sorted[len(sorted)*i/nq]
@@ -212,7 +214,7 @@ func SetTraceback(level string)
 //
 // The memory limit is always respected by the Go runtime, so to
 // effectively disable this behavior, set the limit very high.
-// [math.MaxInt64] is the canonical value for disabling the limit,
+// math.MaxInt64 is the canonical value for disabling the limit,
 // but values much greater than the available memory on the underlying
 // system work just as well.
 //

@@ -166,7 +166,7 @@ func (a *abiSeq) addRcvr(rcvr *abi.Type) (*abiStep, bool) {
 	// The receiver is always one word.
 	a.valueStart = append(a.valueStart, len(a.steps))
 	var ok, ptr bool
-	if rcvr.IfaceIndir() || rcvr.Pointers() {
+	if ifaceIndir(rcvr) || rcvr.Pointers() {
 		ok = a.assignIntN(0, goarch.PtrSize, 1, 0b1)
 		ptr = true
 	} else {

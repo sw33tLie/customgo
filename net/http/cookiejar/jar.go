@@ -6,14 +6,13 @@
 package cookiejar
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/internal/ascii"
 	"net/url"
-	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -74,7 +73,7 @@ type Jar struct {
 	nextSeqNum uint64
 }
 
-// New returns a new cookie jar. A nil [*Options] is equivalent to a zero
+// New returns a new cookie jar. A nil *Options is equivalent to a zero
 // Options.
 func New(o *Options) (*Jar, error) {
 	jar := &Jar{
@@ -93,7 +92,6 @@ func New(o *Options) (*Jar, error) {
 type entry struct {
 	Name       string
 	Value      string
-	Quoted     bool
 	Domain     string
 	Path       string
 	SameSite   string
@@ -153,7 +151,7 @@ func hasDotSuffix(s, suffix string) bool {
 	return len(s) > len(suffix) && s[len(s)-len(suffix)-1] == '.' && s[len(s)-len(suffix):] == suffix
 }
 
-// Cookies implements the Cookies method of the [http.CookieJar] interface.
+// Cookies implements the Cookies method of the http.CookieJar interface.
 //
 // It returns an empty slice if the URL's scheme is not HTTP or HTTPS.
 func (j *Jar) Cookies(u *url.URL) (cookies []*http.Cookie) {
@@ -211,23 +209,24 @@ func (j *Jar) cookies(u *url.URL, now time.Time) (cookies []*http.Cookie) {
 
 	// sort according to RFC 6265 section 5.4 point 2: by longest
 	// path and then by earliest creation time.
-	slices.SortFunc(selected, func(a, b entry) int {
-		if r := cmp.Compare(b.Path, a.Path); r != 0 {
-			return r
+	sort.Slice(selected, func(i, j int) bool {
+		s := selected
+		if len(s[i].Path) != len(s[j].Path) {
+			return len(s[i].Path) > len(s[j].Path)
 		}
-		if r := a.Creation.Compare(b.Creation); r != 0 {
-			return r
+		if ret := s[i].Creation.Compare(s[j].Creation); ret != 0 {
+			return ret < 0
 		}
-		return cmp.Compare(a.seqNum, b.seqNum)
+		return s[i].seqNum < s[j].seqNum
 	})
 	for _, e := range selected {
-		cookies = append(cookies, &http.Cookie{Name: e.Name, Value: e.Value, Quoted: e.Quoted})
+		cookies = append(cookies, &http.Cookie{Name: e.Name, Value: e.Value})
 	}
 
 	return cookies
 }
 
-// SetCookies implements the SetCookies method of the [http.CookieJar] interface.
+// SetCookies implements the SetCookies method of the http.CookieJar interface.
 //
 // It does nothing if the URL's scheme is not HTTP or HTTPS.
 func (j *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
@@ -363,13 +362,6 @@ func jarKey(host string, psl PublicSuffixList) string {
 
 // isIP reports whether host is an IP address.
 func isIP(host string) bool {
-	if strings.ContainsAny(host, ":%") {
-		// Probable IPv6 address.
-		// Hostnames can't contain : or %, so this is definitely not a valid host.
-		// Treating it as an IP is the more conservative option, and avoids the risk
-		// of interpreting ::1%.www.example.com as a subdomain of www.example.com.
-		return true
-	}
 	return net.ParseIP(host) != nil
 }
 
@@ -430,7 +422,6 @@ func (j *Jar) newEntry(c *http.Cookie, now time.Time, defPath, host string) (e e
 	}
 
 	e.Value = c.Value
-	e.Quoted = c.Quoted
 	e.Secure = c.Secure
 	e.HttpOnly = c.HttpOnly
 
@@ -449,6 +440,7 @@ func (j *Jar) newEntry(c *http.Cookie, now time.Time, defPath, host string) (e e
 var (
 	errIllegalDomain   = errors.New("cookiejar: illegal cookie domain attribute")
 	errMalformedDomain = errors.New("cookiejar: malformed cookie domain attribute")
+	errNoHostname      = errors.New("cookiejar: no host name available (IP only)")
 )
 
 // endOfTime is the time when session (non-persistent) cookies expire.

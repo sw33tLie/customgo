@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"fmt"
 	"html/template"
-	"io"
 	"net"
 	"net/http"
 	gourl "net/url"
@@ -29,7 +28,6 @@ import (
 	"time"
 
 	"github.com/google/pprof/internal/graph"
-	"github.com/google/pprof/internal/measurement"
 	"github.com/google/pprof/internal/plugin"
 	"github.com/google/pprof/internal/report"
 	"github.com/google/pprof/profile"
@@ -41,6 +39,7 @@ type webInterface struct {
 	copier       profileCopier
 	options      *plugin.Options
 	help         map[string]string
+	templates    *template.Template
 	settingsFile string
 }
 
@@ -49,11 +48,15 @@ func makeWebInterface(p *profile.Profile, copier profileCopier, opt *plugin.Opti
 	if err != nil {
 		return nil, err
 	}
+	templates := template.New("templategroup")
+	addTemplates(templates)
+	report.AddSourceTemplates(templates)
 	return &webInterface{
 		prof:         p,
 		copier:       copier,
 		options:      opt,
 		help:         make(map[string]string),
+		templates:    templates,
 		settingsFile: settingsFile,
 	}, nil
 }
@@ -79,17 +82,14 @@ type webArgs struct {
 	Total       int64
 	SampleTypes []string
 	Legend      []string
-	Standalone  bool // True for command-line generation of HTML
 	Help        map[string]string
 	Nodes       []string
 	HTMLBody    template.HTML
 	TextBody    string
 	Top         []report.TextItem
-	Listing     report.WebListData
 	FlameGraph  template.JS
 	Stacks      template.JS
 	Configs     []configMenuEntry
-	UnitDefs    []measurement.UnitType
 }
 
 func serveWebInterface(hostport string, p *profile.Profile, o *plugin.Options, disableBrowser bool) error {
@@ -112,6 +112,7 @@ func serveWebInterface(hostport string, p *profile.Profile, o *plugin.Options, d
 	ui.help["details"] = "Show information about the profile and this view"
 	ui.help["graph"] = "Display profile as a directed graph"
 	ui.help["flamegraph"] = "Display profile as a flame graph"
+	ui.help["flamegraph2"] = "Display profile as a flame graph (experimental version that can display caller info on selection)"
 	ui.help["reset"] = "Show the entire profile"
 	ui.help["save_config"] = "Save current settings"
 
@@ -124,16 +125,15 @@ func serveWebInterface(hostport string, p *profile.Profile, o *plugin.Options, d
 		Host:     host,
 		Port:     port,
 		Handlers: map[string]http.Handler{
-			"/":              http.HandlerFunc(ui.dot),
-			"/top":           http.HandlerFunc(ui.top),
-			"/disasm":        http.HandlerFunc(ui.disasm),
-			"/source":        http.HandlerFunc(ui.source),
-			"/peek":          http.HandlerFunc(ui.peek),
-			"/flamegraph":    http.HandlerFunc(ui.stackView),
-			"/flamegraph2":   redirectWithQuery("flamegraph", http.StatusMovedPermanently), // Keep legacy URL working.
-			"/flamegraphold": redirectWithQuery("flamegraph", http.StatusMovedPermanently), // Keep legacy URL working.
-			"/saveconfig":    http.HandlerFunc(ui.saveConfig),
-			"/deleteconfig":  http.HandlerFunc(ui.deleteConfig),
+			"/":             http.HandlerFunc(ui.dot),
+			"/top":          http.HandlerFunc(ui.top),
+			"/disasm":       http.HandlerFunc(ui.disasm),
+			"/source":       http.HandlerFunc(ui.source),
+			"/peek":         http.HandlerFunc(ui.peek),
+			"/flamegraph":   http.HandlerFunc(ui.flamegraph),
+			"/flamegraph2":  http.HandlerFunc(ui.stackView), // Experimental
+			"/saveconfig":   http.HandlerFunc(ui.saveConfig),
+			"/deleteconfig": http.HandlerFunc(ui.deleteConfig),
 			"/download": http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				w.Header().Set("Content-Type", "application/vnd.google.protobuf+gzip")
 				w.Header().Set("Content-Disposition", "attachment;filename=profile.pb.gz")
@@ -208,20 +208,15 @@ func defaultWebServer(args *plugin.HTTPServerArgs) error {
 	// https://github.com/google/pprof/pull/348
 	mux := http.NewServeMux()
 	mux.Handle("/ui/", http.StripPrefix("/ui", handler))
-	mux.Handle("/", redirectWithQuery("/ui", http.StatusTemporaryRedirect))
+	mux.Handle("/", redirectWithQuery("/ui"))
 	s := &http.Server{Handler: mux}
 	return s.Serve(ln)
 }
 
-// redirectWithQuery responds with a given redirect code, preserving query
-// parameters in the redirect URL. It does not convert relative paths to
-// absolute paths like http.Redirect does, so that HTTPServerArgs.Handlers can
-// generate relative redirects that work with the external prefixing.
-func redirectWithQuery(path string, code int) http.HandlerFunc {
+func redirectWithQuery(path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		pathWithQuery := &gourl.URL{Path: path, RawQuery: r.URL.RawQuery}
-		w.Header().Set("Location", pathWithQuery.String())
-		w.WriteHeader(code)
+		http.Redirect(w, r, pathWithQuery.String(), http.StatusTemporaryRedirect)
 	}
 }
 
@@ -283,25 +278,21 @@ func (ui *webInterface) makeReport(w http.ResponseWriter, req *http.Request,
 	return rpt, catcher.errors
 }
 
-// renderHTML generates html using the named template based on the contents of data.
-func renderHTML(dst io.Writer, tmpl string, rpt *report.Report, errList, legend []string, data webArgs) error {
+// render generates html using the named template based on the contents of data.
+func (ui *webInterface) render(w http.ResponseWriter, req *http.Request, tmpl string,
+	rpt *report.Report, errList, legend []string, data webArgs) {
 	file := getFromLegend(legend, "File: ", "unknown")
 	profile := getFromLegend(legend, "Type: ", "unknown")
 	data.Title = file + " " + profile
 	data.Errors = errList
 	data.Total = rpt.Total()
-	data.Legend = legend
-	return getHTMLTemplates().ExecuteTemplate(dst, tmpl, data)
-}
-
-// render responds with html generated by passing data to the named template.
-func (ui *webInterface) render(w http.ResponseWriter, req *http.Request, tmpl string,
-	rpt *report.Report, errList, legend []string, data webArgs) {
 	data.SampleTypes = sampleTypes(ui.prof)
+	data.Legend = legend
 	data.Help = ui.help
 	data.Configs = configMenu(ui.settingsFile, *req.URL)
+
 	html := &bytes.Buffer{}
-	if err := renderHTML(html, tmpl, rpt, errList, legend, data); err != nil {
+	if err := ui.templates.ExecuteTemplate(html, tmpl, data); err != nil {
 		http.Error(w, "internal template error", http.StatusInternalServerError)
 		ui.options.UI.PrintErr(err)
 		return
@@ -414,8 +405,8 @@ func (ui *webInterface) source(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Generate source listing.
-	listing, err := report.MakeWebList(rpt, ui.options.Obj, maxEntries)
-	if err != nil {
+	var body bytes.Buffer
+	if err := report.PrintWebList(&body, rpt, ui.options.Obj, maxEntries); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		ui.options.UI.PrintErr(err)
 		return
@@ -423,7 +414,7 @@ func (ui *webInterface) source(w http.ResponseWriter, req *http.Request) {
 
 	legend := report.ProfileLabels(rpt)
 	ui.render(w, req, "sourcelisting", rpt, errList, legend, webArgs{
-		Listing: listing,
+		HTMLBody: template.HTML(body.String()),
 	})
 }
 

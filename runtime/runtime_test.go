@@ -10,7 +10,7 @@ import (
 	"io"
 	. "runtime"
 	"runtime/debug"
-	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -382,7 +382,9 @@ func BenchmarkGoroutineProfile(b *testing.B) {
 			b.StopTimer()
 
 			// Sort latencies then report percentiles.
-			slices.Sort(latencies)
+			sort.Slice(latencies, func(i, j int) bool {
+				return latencies[i] < latencies[j]
+			})
 			b.ReportMetric(float64(latencies[len(latencies)*50/100]), "p50-ns")
 			b.ReportMetric(float64(latencies[len(latencies)*90/100]), "p90-ns")
 			b.ReportMetric(float64(latencies[len(latencies)*99/100]), "p99-ns")

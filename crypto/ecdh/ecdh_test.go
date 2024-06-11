@@ -412,7 +412,9 @@ type zr struct{}
 
 // Read replaces the contents of dst with zeros. It is safe for concurrent use.
 func (zr) Read(dst []byte) (n int, err error) {
-	clear(dst)
+	for i := range dst {
+		dst[i] = 0
+	}
 	return len(dst), nil
 }
 

@@ -5,7 +5,7 @@
 package runtime
 
 import (
-	"internal/runtime/atomic"
+	"runtime/internal/atomic"
 	"unsafe"
 )
 
@@ -150,8 +150,7 @@ func sysFreeOS(v unsafe.Pointer, n uintptr) {
 }
 
 func sysFaultOS(v unsafe.Pointer, n uintptr) {
-	mprotect(v, n, _PROT_NONE)
-	madvise(v, n, _MADV_DONTNEED)
+	mmap(v, n, _PROT_NONE, _MAP_ANON|_MAP_PRIVATE|_MAP_FIXED, -1, 0)
 }
 
 func sysReserveOS(v unsafe.Pointer, n uintptr) unsafe.Pointer {
@@ -170,13 +169,5 @@ func sysMapOS(v unsafe.Pointer, n uintptr) {
 	if p != v || err != 0 {
 		print("runtime: mmap(", v, ", ", n, ") returned ", p, ", ", err, "\n")
 		throw("runtime: cannot map pages in arena address space")
-	}
-
-	// Disable huge pages if the GODEBUG for it is set.
-	//
-	// Note that there are a few sysHugePage calls that can override this, but
-	// they're all for GC metadata.
-	if debug.disablethp != 0 {
-		sysNoHugePageOS(v, n)
 	}
 }

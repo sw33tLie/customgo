@@ -2,14 +2,14 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package slices_test
+package slices
 
 import (
 	"cmp"
 	"fmt"
 	"math"
 	"math/rand"
-	. "slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +17,7 @@ import (
 
 var ints = [...]int{74, 59, 238, -784, 9845, 959, 905, 0, 0, 42, 7586, -5467984, 7586}
 var float64s = [...]float64{74.3, 59.0, math.Inf(1), 238.2, -784.0, 2.3, math.Inf(-1), 9845.768, -959.7485, 905, 7.8, 7.8, 74.3, 59.0, math.Inf(1), 238.2, -784.0, 2.3}
+var float64sWithNaNs = [...]float64{74.3, 59.0, math.Inf(1), 238.2, -784.0, 2.3, math.NaN(), math.NaN(), math.Inf(-1), 9845.768, -959.7485, 905, 7.8, 7.8}
 var strs = [...]string{"", "Hello", "foo", "bar", "foo", "f00", "%*&^*&^&", "***"}
 
 func TestSortIntSlice(t *testing.T) {
@@ -43,6 +44,23 @@ func TestSortFloat64Slice(t *testing.T) {
 	if !IsSorted(data) {
 		t.Errorf("sorted %v", float64s)
 		t.Errorf("   got %v", data)
+	}
+}
+
+func TestSortFloat64SliceWithNaNs(t *testing.T) {
+	data := float64sWithNaNs[:]
+	data2 := Clone(data)
+
+	Sort(data)
+	sort.Float64s(data2)
+
+	if !IsSorted(data) {
+		t.Error("IsSorted indicates data isn't sorted")
+	}
+
+	// Compare for equality using cmp.Compare, which considers NaNs equal.
+	if !EqualFunc(data, data2, func(a, b float64) bool { return cmp.Compare(a, b) == 0 }) {
+		t.Errorf("mismatch between Sort and sort.Float64: got %v, want %v", data, data2)
 	}
 }
 
@@ -92,8 +110,7 @@ func (d intPairs) initB() {
 }
 
 // InOrder checks if a-equal elements were not reordered.
-// If reversed is true, expect reverse ordering.
-func (d intPairs) inOrder(reversed bool) bool {
+func (d intPairs) inOrder() bool {
 	lastA, lastB := -1, 0
 	for i := 0; i < len(d); i++ {
 		if lastA != d[i].a {
@@ -101,14 +118,8 @@ func (d intPairs) inOrder(reversed bool) bool {
 			lastB = d[i].b
 			continue
 		}
-		if !reversed {
-			if d[i].b <= lastB {
-				return false
-			}
-		} else {
-			if d[i].b >= lastB {
-				return false
-			}
+		if d[i].b <= lastB {
+			return false
 		}
 		lastB = d[i].b
 	}
@@ -134,7 +145,7 @@ func TestStability(t *testing.T) {
 	if !IsSortedFunc(data, intPairCmp) {
 		t.Errorf("Stable didn't sort %d ints", n)
 	}
-	if !data.inOrder(false) {
+	if !data.inOrder() {
 		t.Errorf("Stable wasn't stable on %d ints", n)
 	}
 
@@ -144,7 +155,7 @@ func TestStability(t *testing.T) {
 	if !IsSortedFunc(data, intPairCmp) {
 		t.Errorf("Stable shuffled sorted %d ints (order)", n)
 	}
-	if !data.inOrder(false) {
+	if !data.inOrder() {
 		t.Errorf("Stable shuffled sorted %d ints (stability)", n)
 	}
 
@@ -157,7 +168,7 @@ func TestStability(t *testing.T) {
 	if !IsSortedFunc(data, intPairCmp) {
 		t.Errorf("Stable didn't sort %d ints", n)
 	}
-	if !data.inOrder(false) {
+	if !data.inOrder() {
 		t.Errorf("Stable wasn't stable on %d ints", n)
 	}
 }

@@ -10,7 +10,7 @@ import (
 	"go/importer"
 	"go/token"
 	"internal/testenv"
-	"slices"
+	"sort"
 	"testing"
 
 	. "go/types"
@@ -194,7 +194,7 @@ func TestResolveIdents(t *testing.T) {
 	}
 
 	// check the expected set of idents that are simultaneously uses and defs
-	slices.Sort(both)
+	sort.Strings(both)
 	if got, want := fmt.Sprint(both), "[Mutex Stringer error]"; got != want {
 		t.Errorf("simultaneous uses/defs = %s, want %s", got, want)
 	}

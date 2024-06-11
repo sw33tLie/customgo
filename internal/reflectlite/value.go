@@ -34,9 +34,8 @@ import (
 // Using == on two Values does not compare the underlying values
 // they represent.
 type Value struct {
-	// typ_ holds the type of the value represented by a Value.
-	// Access using the typ method to avoid escape of v.
-	typ_ *abi.Type
+	// typ holds the type of the value represented by a Value.
+	typ *abi.Type
 
 	// Pointer-valued data or, if flagIndir is set, pointer to data.
 	// Valid when either flagIndir is set or typ.pointers() is true.
@@ -88,19 +87,10 @@ func (f flag) ro() flag {
 	return 0
 }
 
-func (v Value) typ() *abi.Type {
-	// Types are either static (for compiler-created types) or
-	// heap-allocated but always reachable (for reflection-created
-	// types, held in the central map). So there is no need to
-	// escape types. noescape here help avoid unnecessary escape
-	// of v.
-	return (*abi.Type)(abi.NoEscape(unsafe.Pointer(v.typ_)))
-}
-
 // pointer returns the underlying pointer represented by v.
 // v.Kind() must be Pointer, Map, Chan, Func, or UnsafePointer
 func (v Value) pointer() unsafe.Pointer {
-	if v.typ().Size() != goarch.PtrSize || !v.typ().Pointers() {
+	if v.typ.Size() != goarch.PtrSize || !v.typ.Pointers() {
 		panic("can't call pointer on a non-pointer Value")
 	}
 	if v.flag&flagIndir != 0 {
@@ -111,52 +101,54 @@ func (v Value) pointer() unsafe.Pointer {
 
 // packEface converts v to the empty interface.
 func packEface(v Value) any {
-	t := v.typ()
+	t := v.typ
 	var i any
-	e := (*abi.EmptyInterface)(unsafe.Pointer(&i))
+	e := (*emptyInterface)(unsafe.Pointer(&i))
 	// First, fill in the data portion of the interface.
 	switch {
-	case t.IfaceIndir():
+	case ifaceIndir(t):
 		if v.flag&flagIndir == 0 {
 			panic("bad indir")
 		}
 		// Value is indirect, and so is the interface we're making.
 		ptr := v.ptr
 		if v.flag&flagAddr != 0 {
+			// TODO: pass safe boolean from valueInterface so
+			// we don't need to copy if safe==true?
 			c := unsafe_New(t)
 			typedmemmove(t, c, ptr)
 			ptr = c
 		}
-		e.Data = ptr
+		e.word = ptr
 	case v.flag&flagIndir != 0:
 		// Value is indirect, but interface is direct. We need
 		// to load the data at v.ptr into the interface data word.
-		e.Data = *(*unsafe.Pointer)(v.ptr)
+		e.word = *(*unsafe.Pointer)(v.ptr)
 	default:
 		// Value is direct, and so is the interface.
-		e.Data = v.ptr
+		e.word = v.ptr
 	}
 	// Now, fill in the type portion. We're very careful here not
 	// to have any operation between the e.word and e.typ assignments
 	// that would let the garbage collector observe the partially-built
 	// interface value.
-	e.Type = t
+	e.typ = t
 	return i
 }
 
 // unpackEface converts the empty interface i to a Value.
 func unpackEface(i any) Value {
-	e := (*abi.EmptyInterface)(unsafe.Pointer(&i))
+	e := (*emptyInterface)(unsafe.Pointer(&i))
 	// NOTE: don't read e.word until we know whether it is really a pointer or not.
-	t := e.Type
+	t := e.typ
 	if t == nil {
 		return Value{}
 	}
 	f := flag(t.Kind())
-	if t.IfaceIndir() {
+	if ifaceIndir(t) {
 		f |= flagIndir
 	}
-	return Value{t, e.Data, f}
+	return Value{t, e.word, f}
 }
 
 // A ValueError occurs when a Value method is invoked on
@@ -183,6 +175,12 @@ func methodName() string {
 		return "unknown method"
 	}
 	return f.Name()
+}
+
+// emptyInterface is the header for an interface{} value.
+type emptyInterface struct {
+	typ  *abi.Type
+	word unsafe.Pointer
 }
 
 // mustBeExported panics if f records that the value was obtained using
@@ -230,7 +228,7 @@ func (v Value) Elem() Value {
 	switch k {
 	case abi.Interface:
 		var eface any
-		if v.typ().NumMethod() == 0 {
+		if v.typ.NumMethod() == 0 {
 			eface = *(*any)(v.ptr)
 		} else {
 			eface = (any)(*(*interface {
@@ -251,7 +249,7 @@ func (v Value) Elem() Value {
 		if ptr == nil {
 			return Value{}
 		}
-		tt := (*ptrType)(unsafe.Pointer(v.typ()))
+		tt := (*ptrType)(unsafe.Pointer(v.typ))
 		typ := tt.Elem
 		fl := v.flag&flagRO | flagIndir | flagAddr
 		fl |= flag(typ.Kind())
@@ -277,6 +275,7 @@ func valueInterface(v Value) any {
 		})(v.ptr)
 	}
 
+	// TODO: pass safe to packEface so we don't need to copy if safe==true?
 	return packEface(v)
 }
 
@@ -323,11 +322,7 @@ func (v Value) Kind() Kind {
 }
 
 // implemented in runtime:
-
-//go:noescape
 func chanlen(unsafe.Pointer) int
-
-//go:noescape
 func maplen(unsafe.Pointer) int
 
 // Len returns v's length.
@@ -336,7 +331,7 @@ func (v Value) Len() int {
 	k := v.kind()
 	switch k {
 	case abi.Array:
-		tt := (*arrayType)(unsafe.Pointer(v.typ()))
+		tt := (*arrayType)(unsafe.Pointer(v.typ))
 		return int(tt.Len)
 	case abi.Chan:
 		return chanlen(v.pointer())
@@ -354,10 +349,10 @@ func (v Value) Len() int {
 
 // NumMethod returns the number of exported methods in the value's method set.
 func (v Value) numMethod() int {
-	if v.typ() == nil {
+	if v.typ == nil {
 		panic(&ValueError{"reflectlite.Value.NumMethod", abi.Invalid})
 	}
-	return v.typ().NumMethod()
+	return v.typ.NumMethod()
 }
 
 // Set assigns x to the value v.
@@ -370,9 +365,9 @@ func (v Value) Set(x Value) {
 	if v.kind() == abi.Interface {
 		target = v.ptr
 	}
-	x = x.assignTo("reflectlite.Set", v.typ(), target)
+	x = x.assignTo("reflectlite.Set", v.typ, target)
 	if x.flag&flagIndir != 0 {
-		typedmemmove(v.typ(), v.ptr, x.ptr)
+		typedmemmove(v.typ, v.ptr, x.ptr)
 	} else {
 		*(*unsafe.Pointer)(v.ptr) = x.ptr
 	}
@@ -385,7 +380,7 @@ func (v Value) Type() Type {
 		panic(&ValueError{"reflectlite.Value.Type", abi.Invalid})
 	}
 	// Method values not supported.
-	return toRType(v.typ())
+	return toRType(v.typ)
 }
 
 /*
@@ -393,8 +388,6 @@ func (v Value) Type() Type {
  */
 
 // implemented in package runtime
-
-//go:noescape
 func unsafe_New(*abi.Type) unsafe.Pointer
 
 // ValueOf returns a new Value initialized to the concrete value
@@ -403,6 +396,13 @@ func ValueOf(i any) Value {
 	if i == nil {
 		return Value{}
 	}
+
+	// TODO: Maybe allow contents of a Value to live on the stack.
+	// For now we make the contents always escape to the heap. It
+	// makes life easier in a few places (see chanrecv/mapassign
+	// comment below).
+	escapes(i)
+
 	return unpackEface(i)
 }
 
@@ -415,14 +415,14 @@ func (v Value) assignTo(context string, dst *abi.Type, target unsafe.Pointer) Va
 	// }
 
 	switch {
-	case directlyAssignable(dst, v.typ()):
+	case directlyAssignable(dst, v.typ):
 		// Overwrite type so that they match.
 		// Same memory layout, so no harm done.
 		fl := v.flag&(flagAddr|flagIndir) | v.flag.ro()
 		fl |= flag(dst.Kind())
 		return Value{dst, v.ptr, fl}
 
-	case implements(dst, v.typ()):
+	case implements(dst, v.typ):
 		if target == nil {
 			target = unsafe_New(dst)
 		}
@@ -442,7 +442,7 @@ func (v Value) assignTo(context string, dst *abi.Type, target unsafe.Pointer) Va
 	}
 
 	// Failed.
-	panic(context + ": value of type " + toRType(v.typ()).String() + " is not assignable to type " + toRType(dst).String())
+	panic(context + ": value of type " + toRType(v.typ).String() + " is not assignable to type " + toRType(dst).String())
 }
 
 // arrayAt returns the i-th element of p,

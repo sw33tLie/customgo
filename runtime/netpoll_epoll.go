@@ -7,15 +7,17 @@
 package runtime
 
 import (
-	"internal/runtime/atomic"
-	"internal/runtime/syscall"
+	"runtime/internal/atomic"
+	"runtime/internal/syscall"
 	"unsafe"
 )
 
 var (
-	epfd           int32         = -1 // epoll descriptor
-	netpollEventFd uintptr            // eventfd for netpollBreak
-	netpollWakeSig atomic.Uint32      // used to avoid duplicate calls of netpollBreak
+	epfd int32 = -1 // epoll descriptor
+
+	netpollBreakRd, netpollBreakWr uintptr // for netpollBreak
+
+	netpollWakeSig atomic.Uint32 // used to avoid duplicate calls of netpollBreak
 )
 
 func netpollinit() {
@@ -25,25 +27,26 @@ func netpollinit() {
 		println("runtime: epollcreate failed with", errno)
 		throw("runtime: netpollinit failed")
 	}
-	efd, errno := syscall.Eventfd(0, syscall.EFD_CLOEXEC|syscall.EFD_NONBLOCK)
-	if errno != 0 {
-		println("runtime: eventfd failed with", -errno)
-		throw("runtime: eventfd failed")
+	r, w, errpipe := nonblockingPipe()
+	if errpipe != 0 {
+		println("runtime: pipe failed with", -errpipe)
+		throw("runtime: pipe failed")
 	}
 	ev := syscall.EpollEvent{
 		Events: syscall.EPOLLIN,
 	}
-	*(**uintptr)(unsafe.Pointer(&ev.Data)) = &netpollEventFd
-	errno = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, efd, &ev)
+	*(**uintptr)(unsafe.Pointer(&ev.Data)) = &netpollBreakRd
+	errno = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, r, &ev)
 	if errno != 0 {
 		println("runtime: epollctl failed with", errno)
 		throw("runtime: epollctl failed")
 	}
-	netpollEventFd = uintptr(efd)
+	netpollBreakRd = uintptr(r)
+	netpollBreakWr = uintptr(w)
 }
 
 func netpollIsPollDescriptor(fd uintptr) bool {
-	return fd == uintptr(epfd) || fd == netpollEventFd
+	return fd == uintptr(epfd) || fd == netpollBreakRd || fd == netpollBreakWr
 }
 
 func netpollopen(fd uintptr, pd *pollDesc) uintptr {
@@ -70,11 +73,10 @@ func netpollBreak() {
 		return
 	}
 
-	var one uint64 = 1
-	oneSize := int32(unsafe.Sizeof(one))
 	for {
-		n := write(netpollEventFd, noescape(unsafe.Pointer(&one)), oneSize)
-		if n == oneSize {
+		var b byte
+		n := write(netpollBreakWr, unsafe.Pointer(&b), 1)
+		if n == 1 {
 			break
 		}
 		if n == -_EINTR {
@@ -93,9 +95,9 @@ func netpollBreak() {
 // delay < 0: blocks indefinitely
 // delay == 0: does not block, just polls
 // delay > 0: block for up to that many nanoseconds
-func netpoll(delay int64) (gList, int32) {
+func netpoll(delay int64) gList {
 	if epfd == -1 {
-		return gList{}, 0
+		return gList{}
 	}
 	var waitms int32
 	if delay < 0 {
@@ -122,31 +124,28 @@ retry:
 		// If a timed sleep was interrupted, just return to
 		// recalculate how long we should sleep now.
 		if waitms > 0 {
-			return gList{}, 0
+			return gList{}
 		}
 		goto retry
 	}
 	var toRun gList
-	delta := int32(0)
 	for i := int32(0); i < n; i++ {
 		ev := events[i]
 		if ev.Events == 0 {
 			continue
 		}
 
-		if *(**uintptr)(unsafe.Pointer(&ev.Data)) == &netpollEventFd {
+		if *(**uintptr)(unsafe.Pointer(&ev.Data)) == &netpollBreakRd {
 			if ev.Events != syscall.EPOLLIN {
-				println("runtime: netpoll: eventfd ready for", ev.Events)
-				throw("runtime: netpoll: eventfd ready for something unexpected")
+				println("runtime: netpoll: break fd ready for", ev.Events)
+				throw("runtime: netpoll: break fd ready for something unexpected")
 			}
 			if delay != 0 {
 				// netpollBreak could be picked up by a
-				// nonblocking poll. Only read the 8-byte
-				// integer if blocking.
-				// Since EFD_SEMAPHORE was not specified,
-				// the eventfd counter will be reset to 0.
-				var one uint64
-				read(int32(netpollEventFd), noescape(unsafe.Pointer(&one)), int32(unsafe.Sizeof(one)))
+				// nonblocking poll. Only read the byte
+				// if blocking.
+				var tmp [16]byte
+				read(int32(netpollBreakRd), noescape(unsafe.Pointer(&tmp[0])), int32(len(tmp)))
 				netpollWakeSig.Store(0)
 			}
 			continue
@@ -165,9 +164,9 @@ retry:
 			tag := tp.tag()
 			if pd.fdseq.Load() == tag {
 				pd.setEventErr(ev.Events == syscall.EPOLLERR, tag)
-				delta += netpollready(&toRun, pd, mode)
+				netpollready(&toRun, pd, mode)
 			}
 		}
 	}
-	return toRun, delta
+	return toRun
 }

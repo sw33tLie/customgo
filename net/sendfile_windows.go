@@ -11,8 +11,6 @@ import (
 	"syscall"
 )
 
-const supportsSendfile = true
-
 // sendFile copies the contents of r to c using the TransmitFile
 // system call to minimize copies.
 //

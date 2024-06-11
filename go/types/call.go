@@ -12,13 +12,14 @@ import (
 	"go/token"
 	. "internal/types/errors"
 	"strings"
+	"unicode"
 )
 
 // funcInst type-checks a function instantiation.
 // The incoming x must be a generic function.
 // If ix != nil, it provides some or all of the type arguments (ix.Indices).
-// If target != nil, it may be used to infer missing type arguments of x, if any.
-// At least one of T or ix must be provided.
+// If target type tsig != nil, the signature may be used to infer missing type
+// arguments of x, if any. At least one of tsig or inst must be provided.
 //
 // There are two modes of operation:
 //
@@ -33,13 +34,12 @@ import (
 //
 // If an error (other than a version error) occurs in any case, it is reported
 // and x.mode is set to invalid.
-func (check *Checker) funcInst(T *target, pos token.Pos, x *operand, ix *typeparams.IndexExpr, infer bool) ([]Type, []ast.Expr) {
-	assert(T != nil || ix != nil)
+func (check *Checker) funcInst(tsig *Signature, pos token.Pos, x *operand, ix *typeparams.IndexExpr, infer bool) ([]Type, []ast.Expr) {
+	assert(tsig != nil || ix != nil)
 
 	var instErrPos positioner
 	if ix != nil {
 		instErrPos = inNode(ix.Orig, ix.Lbrack)
-		x.expr = ix.Orig // if we don't have an index expression, keep the existing expression of x
 	} else {
 		instErrPos = atPos(pos)
 	}
@@ -53,6 +53,7 @@ func (check *Checker) funcInst(T *target, pos token.Pos, x *operand, ix *typepar
 		targs = check.typeList(xlist)
 		if targs == nil {
 			x.mode = invalid
+			x.expr = ix
 			return nil, nil
 		}
 		assert(len(targs) == len(xlist))
@@ -67,6 +68,7 @@ func (check *Checker) funcInst(T *target, pos token.Pos, x *operand, ix *typepar
 		// Providing too many type arguments is always an error.
 		check.errorf(ix.Indices[got-1], WrongTypeArgCount, "got %d type arguments but want %d", got, want)
 		x.mode = invalid
+		x.expr = ix.Orig
 		return nil, nil
 	}
 
@@ -87,9 +89,8 @@ func (check *Checker) funcInst(T *target, pos token.Pos, x *operand, ix *typepar
 		//
 		var args []*operand
 		var params []*Var
-		var reverse bool
-		if T != nil && sig.tparams != nil {
-			if !versionErr && !check.allowVersion(instErrPos, go1_21) {
+		if tsig != nil && sig.tparams != nil {
+			if !versionErr && !check.allowVersion(check.pkg, instErrPos, go1_21) {
 				if ix != nil {
 					check.versionErrorf(instErrPos, go1_21, "partially instantiated function in assignment")
 				} else {
@@ -101,23 +102,20 @@ func (check *Checker) funcInst(T *target, pos token.Pos, x *operand, ix *typepar
 			// The type of the argument operand is tsig, which is the type of the LHS in an assignment
 			// or the result type in a return statement. Create a pseudo-expression for that operand
 			// that makes sense when reported in error messages from infer, below.
-			expr := ast.NewIdent(T.desc)
+			expr := ast.NewIdent("variable in assignment")
 			expr.NamePos = x.Pos() // correct position
-			args = []*operand{{mode: value, expr: expr, typ: T.sig}}
-			reverse = true
+			args = []*operand{{mode: value, expr: expr, typ: tsig}}
 		}
 
 		// Rename type parameters to avoid problems with recursive instantiations.
 		// Note that NewTuple(params...) below is (*Tuple)(nil) if len(params) == 0, as desired.
 		tparams, params2 := check.renameTParams(pos, sig.TypeParams().list(), NewTuple(params...))
 
-		err := check.newError(CannotInferTypeArgs)
-		targs = check.infer(atPos(pos), tparams, targs, params2.(*Tuple), args, reverse, err)
+		targs = check.infer(atPos(pos), tparams, targs, params2.(*Tuple), args)
 		if targs == nil {
-			if !err.empty() {
-				err.report()
-			}
+			// error was already reported
 			x.mode = invalid
+			x.expr = ix // TODO(gri) is this correct?
 			return nil, nil
 		}
 		got = len(targs)
@@ -125,9 +123,15 @@ func (check *Checker) funcInst(T *target, pos token.Pos, x *operand, ix *typepar
 	assert(got == want)
 
 	// instantiate function signature
-	sig = check.instantiateSignature(x.Pos(), x.expr, sig, targs, xlist)
+	expr := x.expr // if we don't have an index expression, keep the existing expression of x
+	if ix != nil {
+		expr = ix.Orig
+	}
+	sig = check.instantiateSignature(x.Pos(), expr, sig, targs, xlist)
+
 	x.typ = sig
 	x.mode = value
+	x.expr = expr
 	return nil, nil
 }
 
@@ -205,7 +209,7 @@ func (check *Checker) callExpr(x *operand, call *ast.CallExpr) exprKind {
 		case 1:
 			check.expr(nil, x, call.Args[0])
 			if x.mode != invalid {
-				if hasDots(call) {
+				if call.Ellipsis.IsValid() {
 					check.errorf(call.Args[0], BadDotDotDotSyntax, "invalid use of ... in conversion to %s", T)
 					break
 				}
@@ -374,7 +378,7 @@ func (check *Checker) genericExprList(elist []ast.Expr) (resList []*operand, tar
 	// nor permitted. Checker.funcInst must infer missing type arguments in that case.
 	infer := true // for -lang < go1.21
 	n := len(elist)
-	if n > 0 && check.allowVersion(elist[0], go1_21) {
+	if n > 0 && check.allowVersion(check.pkg, elist[0], go1_21) {
 		infer = false
 	}
 
@@ -470,7 +474,7 @@ func (check *Checker) arguments(call *ast.CallExpr, sig *Signature, targs []Type
 
 	nargs := len(args)
 	npars := sig.params.Len()
-	ddd := hasDots(call)
+	ddd := call.Ellipsis.IsValid()
 
 	// set up parameters
 	sigParams := sig.params // adjusted for variadic functions (may be nil for empty parameter lists!)
@@ -528,11 +532,10 @@ func (check *Checker) arguments(call *ast.CallExpr, sig *Signature, targs []Type
 		if sig.params != nil {
 			params = sig.params.vars
 		}
-		err := check.newError(WrongArgCount)
-		err.addf(at, "%s arguments in call to %s", qualifier, call.Fun)
-		err.addf(noposn, "have %s", check.typesSummary(operandTypes(args), false))
-		err.addf(noposn, "want %s", check.typesSummary(varTypes(params), sig.variadic))
-		err.report()
+		err := newErrorf(at, WrongArgCount, "%s arguments in call to %s", qualifier, call.Fun)
+		err.errorf(nopos, "have %s", check.typesSummary(operandTypes(args), false))
+		err.errorf(nopos, "want %s", check.typesSummary(varTypes(params), sig.variadic))
+		check.report(err)
 		return
 	}
 
@@ -542,7 +545,7 @@ func (check *Checker) arguments(call *ast.CallExpr, sig *Signature, targs []Type
 	// collect type parameters of callee
 	n := sig.TypeParams().Len()
 	if n > 0 {
-		if !check.allowVersion(call, go1_18) {
+		if !check.allowVersion(check.pkg, call, go1_18) {
 			switch call.Fun.(type) {
 			case *ast.IndexExpr, *ast.IndexListExpr:
 				ix := typeparams.UnpackIndexExpr(call.Fun)
@@ -568,13 +571,6 @@ func (check *Checker) arguments(call *ast.CallExpr, sig *Signature, targs []Type
 		for i, arg := range args {
 			// generic arguments cannot have a defined (*Named) type - no need for underlying type below
 			if asig, _ := arg.typ.(*Signature); asig != nil && asig.TypeParams().Len() > 0 {
-				// The argument type is a generic function signature. This type is
-				// pointer-identical with (it's copied from) the type of the generic
-				// function argument and thus the function object.
-				// Before we change the type (type parameter renaming, below), make
-				// a clone of it as otherwise we implicitly modify the object's type
-				// (go.dev/issues/63260).
-				asig = clone(asig)
 				// Rename type parameters for cases like f(g, g); this gives each
 				// generic function argument a unique type identity (go.dev/issues/59956).
 				// TODO(gri) Consider only doing this if a function argument appears
@@ -607,17 +603,13 @@ func (check *Checker) arguments(call *ast.CallExpr, sig *Signature, targs []Type
 
 	// infer missing type arguments of callee and function arguments
 	if len(tparams) > 0 {
-		err := check.newError(CannotInferTypeArgs)
-		targs = check.infer(call, tparams, targs, sigParams, args, false, err)
+		targs = check.infer(call, tparams, targs, sigParams, args)
 		if targs == nil {
 			// TODO(gri) If infer inferred the first targs[:n], consider instantiating
 			//           the call signature for better error messages/gopls behavior.
 			//           Perhaps instantiate as much as we can, also for arguments.
 			//           This will require changes to how infer returns its results.
-			if !err.empty() {
-				check.errorf(err.posn(), CannotInferTypeArgs, "in call to %s, %s", call.Fun, err.msg())
-			}
-			return
+			return // error already reported
 		}
 
 		// update result signature: instantiate if needed
@@ -668,7 +660,7 @@ var cgoPrefixes = [...]string{
 	"_Cmacro_", // function to evaluate the expanded expression
 }
 
-func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *TypeName, wantType bool) {
+func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *Named, wantType bool) {
 	// these must be declared before the "goto Error" statements
 	var (
 		obj      Object
@@ -722,7 +714,7 @@ func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *TypeName, w
 					goto Error
 				}
 				if !exp.Exported() {
-					check.errorf(e.Sel, UnexportedName, "name %s not exported by package %s", sel, pkg.name)
+					check.errorf(e.Sel, UnexportedName, "%s not exported by package %s", sel, pkg.name)
 					// ok to continue
 				}
 			}
@@ -758,7 +750,7 @@ func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *TypeName, w
 				x.id = exp.id
 			default:
 				check.dump("%v: unexpected object %v", e.Sel.Pos(), exp)
-				panic("unreachable")
+				unreachable()
 			}
 			x.expr = e
 			return
@@ -769,8 +761,8 @@ func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *TypeName, w
 	switch x.mode {
 	case typexpr:
 		// don't crash for "type T T.x" (was go.dev/issue/51509)
-		if def != nil && def.typ == x.typ {
-			check.cycleError([]Object{def}, 0)
+		if def != nil && x.typ == def {
+			check.cycleError([]Object{def.obj})
 			goto Error
 		}
 	case builtin:
@@ -800,10 +792,10 @@ func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *TypeName, w
 		goto Error
 	}
 
-	obj, index, indirect = lookupFieldOrMethod(x.typ, x.mode == variable, check.pkg, sel, false)
+	obj, index, indirect = LookupFieldOrMethod(x.typ, x.mode == variable, check.pkg, sel)
 	if obj == nil {
 		// Don't report another error if the underlying type was invalid (go.dev/issue/49541).
-		if !isValid(under(x.typ)) {
+		if under(x.typ) == Typ[Invalid] {
 			goto Error
 		}
 
@@ -826,8 +818,22 @@ func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *TypeName, w
 		if isInterfacePtr(x.typ) {
 			why = check.interfacePtrError(x.typ)
 		} else {
-			alt, _, _ := lookupFieldOrMethod(x.typ, x.mode == variable, check.pkg, sel, true)
-			why = check.lookupError(x.typ, sel, alt, false)
+			why = check.sprintf("type %s has no field or method %s", x.typ, sel)
+			// Check if capitalization of sel matters and provide better error message in that case.
+			// TODO(gri) This code only looks at the first character but LookupFieldOrMethod should
+			//           have an (internal) mechanism for case-insensitive lookup that we should use
+			//           instead (see types2).
+			if len(sel) > 0 {
+				var changeCase string
+				if r := rune(sel[0]); unicode.IsUpper(r) {
+					changeCase = string(unicode.ToLower(r)) + sel[1:]
+				} else {
+					changeCase = string(unicode.ToUpper(r)) + sel[1:]
+				}
+				if obj, _, _ = LookupFieldOrMethod(x.typ, x.mode == variable, check.pkg, changeCase); obj != nil {
+					why += ", but does have " + changeCase
+				}
+			}
 		}
 		check.errorf(e.Sel, MissingFieldOrMethod, "%s.%s undefined (%s)", x.expr, sel, why)
 		goto Error
@@ -842,6 +848,7 @@ func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *TypeName, w
 		// method expression
 		m, _ := obj.(*Func)
 		if m == nil {
+			// TODO(gri) should check if capitalization of sel matters and provide better error message in that case
 			check.errorf(e.Sel, MissingFieldOrMethod, "%s.%s undefined (type %s has no method %s)", x.expr, sel, x.typ, sel)
 			goto Error
 		}
@@ -957,7 +964,7 @@ func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *TypeName, w
 			check.addDeclDep(obj)
 
 		default:
-			panic("unreachable")
+			unreachable()
 		}
 	}
 
@@ -995,7 +1002,7 @@ func (check *Checker) useN(args []ast.Expr, lhs bool) bool {
 func (check *Checker) use1(e ast.Expr, lhs bool) bool {
 	var x operand
 	x.mode = value // anything but invalid
-	switch n := ast.Unparen(e).(type) {
+	switch n := unparen(e).(type) {
 	case nil:
 		// nothing to do
 	case *ast.Ident:

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"time"
 )
 
 // lockedWriter serializes Write calls to an underlying Writer.
@@ -99,7 +98,7 @@ func (f *testJSONFilter) process(line []byte) {
 				data, err := json.Marshal(val)
 				if err != nil {
 					// Should never happen.
-					panic(fmt.Sprintf("failed to round-trip JSON %q: %s", line, err))
+					panic(fmt.Sprintf("failed to round-trip JSON %q: %s", string(line), err))
 				}
 				f.w.Write(data)
 				// Copy any trailing text. We expect at most a "\n" here, but
@@ -184,21 +183,4 @@ func (v jsonValue) MarshalJSON() ([]byte, error) {
 	}
 	err := marshal1(v)
 	return buf.Bytes(), err
-}
-
-func synthesizeSkipEvent(enc *json.Encoder, pkg, msg string) {
-	type event struct {
-		Time    time.Time
-		Action  string
-		Package string
-		Output  string `json:",omitempty"`
-	}
-	ev := event{Time: time.Now(), Package: pkg, Action: "start"}
-	enc.Encode(ev)
-	ev.Action = "output"
-	ev.Output = msg
-	enc.Encode(ev)
-	ev.Action = "skip"
-	ev.Output = ""
-	enc.Encode(ev)
 }

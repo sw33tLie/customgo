@@ -14,7 +14,6 @@ TEXT ·Count<ABIInternal>(SB),NOSPLIT,$0-40
 	MOV	ZERO, X14	// count
 	ADD	X10, X11	// end
 
-	PCALIGN	$16
 loop:
 	BEQ	X10, X11, done
 	MOVBU	(X10), X15
@@ -35,7 +34,6 @@ TEXT ·CountString<ABIInternal>(SB),NOSPLIT,$0-32
 	MOV	ZERO, X14	// count
 	ADD	X10, X11	// end
 
-	PCALIGN	$16
 loop:
 	BEQ	X10, X11, done
 	MOVBU	(X10), X15

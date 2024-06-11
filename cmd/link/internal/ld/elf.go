@@ -155,7 +155,7 @@ const (
  * marshal a 32-bit representation from the 64-bit structure.
  */
 
-var elfstrdat, elfshstrdat []byte
+var Elfstrdat []byte
 
 /*
  * Total amount of space to reserve at the start of the file
@@ -208,7 +208,7 @@ type ELFArch struct {
 
 	Reloc1    func(*Link, *OutBuf, *loader.Loader, loader.Sym, loader.ExtReloc, int, int64) bool
 	RelocSize uint32 // size of an ELF relocation record, must match Reloc1.
-	SetupPLT  func(ctxt *Link, ldr *loader.Loader, plt, gotplt *loader.SymbolBuilder, dynamic loader.Sym)
+	SetupPLT  func(ctxt *Link, plt, gotplt *loader.SymbolBuilder, dynamic loader.Sym)
 
 	// DynamicReadOnly can be set to true to make the .dynamic
 	// section read-only. By default it is writable.
@@ -243,7 +243,7 @@ func Elfinit(ctxt *Link) {
 	switch ctxt.Arch.Family {
 	// 64-bit architectures
 	case sys.PPC64, sys.S390X:
-		if ctxt.Arch.ByteOrder == binary.BigEndian && ctxt.HeadType != objabi.Hopenbsd {
+		if ctxt.Arch.ByteOrder == binary.BigEndian {
 			ehdr.Flags = 1 /* Version 1 ABI */
 		} else {
 			ehdr.Flags = 2 /* Version 2 ABI */
@@ -806,18 +806,6 @@ func elfwritefreebsdsig(out *OutBuf) int {
 }
 
 func addbuildinfo(val string) {
-	if val == "gobuildid" {
-		buildID := *flagBuildid
-		if buildID == "" {
-			Exitf("-B gobuildid requires a Go build ID supplied via -buildid")
-		}
-
-		hashedBuildID := notsha256.Sum256([]byte(buildID))
-		buildinfo = hashedBuildID[:20]
-
-		return
-	}
-
 	if !strings.HasPrefix(val, "0x") {
 		Exitf("-B argument must start with 0x: %s", val)
 	}
@@ -1056,17 +1044,11 @@ func elfdynhash(ctxt *Link) {
 	}
 
 	s = ldr.CreateSymForUpdate(".dynamic", 0)
-
-	var dtFlags1 elf.DynFlag1
-	if *flagBindNow {
-		dtFlags1 |= elf.DF_1_NOW
-		Elfwritedynent(ctxt.Arch, s, elf.DT_FLAGS, uint64(elf.DF_BIND_NOW))
-	}
 	if ctxt.BuildMode == BuildModePIE {
-		dtFlags1 |= elf.DF_1_PIE
+		// https://github.com/bminor/glibc/blob/895ef79e04a953cac1493863bcae29ad85657ee1/elf/elf.h#L986
+		const DTFLAGS_1_PIE = 0x08000000
+		Elfwritedynent(ctxt.Arch, s, elf.DT_FLAGS_1, uint64(DTFLAGS_1_PIE))
 	}
-	Elfwritedynent(ctxt.Arch, s, elf.DT_FLAGS_1, uint64(dtFlags1))
-
 	elfverneed = nfile
 	if elfverneed != 0 {
 		elfWriteDynEntSym(ctxt, s, elf.DT_VERNEED, gnuVersionR.Sym())
@@ -1113,7 +1095,6 @@ func elfphload(seg *sym.Segment) *ElfPhdr {
 func elfphrelro(seg *sym.Segment) {
 	ph := newElfPhdr()
 	ph.Type = elf.PT_GNU_RELRO
-	ph.Flags = elf.PF_R
 	ph.Vaddr = seg.Vaddr
 	ph.Paddr = seg.Vaddr
 	ph.Memsz = seg.Length
@@ -1405,16 +1386,12 @@ func (ctxt *Link) doelf() {
 	ldr := ctxt.loader
 
 	/* predefine strings we need for section headers */
+	shstrtab := ldr.CreateSymForUpdate(".shstrtab", 0)
 
-	addshstr := func(s string) int {
-		off := len(elfshstrdat)
-		elfshstrdat = append(elfshstrdat, s...)
-		elfshstrdat = append(elfshstrdat, 0)
-		return off
-	}
+	shstrtab.SetType(sym.SELFROSECT)
 
 	shstrtabAddstring := func(s string) {
-		off := addshstr(s)
+		off := shstrtab.Addstring(s)
 		elfsetstring(ctxt, 0, s, int(off))
 	}
 
@@ -1514,8 +1491,6 @@ func (ctxt *Link) doelf() {
 	if !*FlagS {
 		shstrtabAddstring(".symtab")
 		shstrtabAddstring(".strtab")
-	}
-	if !*FlagW {
 		dwarfaddshstrings(ctxt, shstrtabAddstring)
 	}
 
@@ -1563,11 +1538,7 @@ func (ctxt *Link) doelf() {
 
 		/* global offset table */
 		got := ldr.CreateSymForUpdate(".got", 0)
-		if ctxt.UseRelro() {
-			got.SetType(sym.SELFRELROSECT)
-		} else {
-			got.SetType(sym.SELFGOT) // writable
-		}
+		got.SetType(sym.SELFGOT) // writable
 
 		/* ppc64 glink resolver */
 		if ctxt.IsPPC64() {
@@ -1580,11 +1551,7 @@ func (ctxt *Link) doelf() {
 		hash.SetType(sym.SELFROSECT)
 
 		gotplt := ldr.CreateSymForUpdate(".got.plt", 0)
-		if ctxt.UseRelro() && *flagBindNow {
-			gotplt.SetType(sym.SELFRELROSECT)
-		} else {
-			gotplt.SetType(sym.SELFSECT) // writable
-		}
+		gotplt.SetType(sym.SELFSECT) // writable
 
 		plt := ldr.CreateSymForUpdate(".plt", 0)
 		if ctxt.IsPPC64() {
@@ -1606,12 +1573,9 @@ func (ctxt *Link) doelf() {
 
 		/* define dynamic elf table */
 		dynamic := ldr.CreateSymForUpdate(".dynamic", 0)
-		switch {
-		case thearch.ELF.DynamicReadOnly:
+		if thearch.ELF.DynamicReadOnly {
 			dynamic.SetType(sym.SELFROSECT)
-		case ctxt.UseRelro():
-			dynamic.SetType(sym.SELFRELROSECT)
-		default:
+		} else {
 			dynamic.SetType(sym.SELFSECT)
 		}
 
@@ -1619,7 +1583,7 @@ func (ctxt *Link) doelf() {
 			// S390X uses .got instead of .got.plt
 			gotplt = got
 		}
-		thearch.ELF.SetupPLT(ctxt, ctxt.loader, plt, gotplt, dynamic.Sym())
+		thearch.ELF.SetupPLT(ctxt, plt, gotplt, dynamic.Sym())
 
 		/*
 		 * .dynamic table
@@ -1780,16 +1744,12 @@ func Asmbelfsetup() {
 
 func asmbElf(ctxt *Link) {
 	var symo int64
-	symo = int64(Segdwarf.Fileoff + Segdwarf.Filelen)
-	symo = Rnd(symo, int64(ctxt.Arch.PtrSize))
-	ctxt.Out.SeekSet(symo)
-	if *FlagS {
-		ctxt.Out.Write(elfshstrdat)
-	} else {
+	if !*FlagS {
+		symo = int64(Segdwarf.Fileoff + Segdwarf.Filelen)
+		symo = Rnd(symo, int64(ctxt.Arch.PtrSize))
 		ctxt.Out.SeekSet(symo)
 		asmElfSym(ctxt)
-		ctxt.Out.Write(elfstrdat)
-		ctxt.Out.Write(elfshstrdat)
+		ctxt.Out.Write(Elfstrdat)
 		if ctxt.IsExternal() {
 			elfEmitReloc(ctxt)
 		}
@@ -2185,10 +2145,6 @@ func asmbElf(ctxt *Link) {
 		ph.Type = elf.PT_GNU_STACK
 		ph.Flags = elf.PF_W + elf.PF_R
 		ph.Align = uint64(ctxt.Arch.RegSize)
-	} else if ctxt.HeadType == objabi.Hopenbsd {
-		ph := newElfPhdr()
-		ph.Type = elf.PT_OPENBSD_NOBTCFI
-		ph.Flags = elf.PF_X
 	} else if ctxt.HeadType == objabi.Hsolaris {
 		ph := newElfPhdr()
 		ph.Type = elf.PT_SUNWSTACK
@@ -2197,6 +2153,9 @@ func asmbElf(ctxt *Link) {
 
 elfobj:
 	sh := elfshname(".shstrtab")
+	sh.Type = uint32(elf.SHT_STRTAB)
+	sh.Addralign = 1
+	shsym(sh, ldr, ldr.Lookup(".shstrtab", 0))
 	eh.Shstrndx = uint16(sh.shnum)
 
 	if ctxt.IsMIPS() {
@@ -2223,7 +2182,6 @@ elfobj:
 		elfshname(".symtab")
 		elfshname(".strtab")
 	}
-	elfshname(".shstrtab")
 
 	for _, sect := range Segtext.Sections {
 		elfshbits(ctxt.LinkMode, sect)
@@ -2266,7 +2224,6 @@ elfobj:
 		sh.Flags = 0
 	}
 
-	var shstroff uint64
 	if !*FlagS {
 		sh := elfshname(".symtab")
 		sh.Type = uint32(elf.SHT_SYMTAB)
@@ -2280,18 +2237,9 @@ elfobj:
 		sh = elfshname(".strtab")
 		sh.Type = uint32(elf.SHT_STRTAB)
 		sh.Off = uint64(symo) + uint64(symSize)
-		sh.Size = uint64(len(elfstrdat))
+		sh.Size = uint64(len(Elfstrdat))
 		sh.Addralign = 1
-		shstroff = sh.Off + sh.Size
-	} else {
-		shstroff = uint64(symo)
 	}
-
-	sh = elfshname(".shstrtab")
-	sh.Type = uint32(elf.SHT_STRTAB)
-	sh.Off = shstroff
-	sh.Size = uint64(len(elfshstrdat))
-	sh.Addralign = 1
 
 	/* Main header */
 	copy(eh.Ident[:], elf.ELFMAG)

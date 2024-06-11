@@ -85,14 +85,18 @@ func (b *pageBits) clearRange(i, n uint) {
 	_ = b[j/64]
 	// Clear leading bits.
 	b[i/64] &^= ^uint64(0) << (i % 64)
-	clear(b[i/64+1 : j/64])
+	for k := i/64 + 1; k < j/64; k++ {
+		b[k] = 0
+	}
 	// Clear trailing bits.
 	b[j/64] &^= (uint64(1) << (j%64 + 1)) - 1
 }
 
 // clearAll frees all the bits of b.
 func (b *pageBits) clearAll() {
-	clear(b[:])
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 // clearBlock64 clears the 64-bit aligned block of bits containing the i'th bit that
@@ -130,7 +134,7 @@ type pallocBits pageBits
 
 // summarize returns a packed summary of the bitmap in pallocBits.
 func (b *pallocBits) summarize() pallocSum {
-	var start, most, cur uint
+	var start, max, cur uint
 	const notSetYet = ^uint(0) // sentinel for start value
 	start = notSetYet
 	for i := 0; i < len(b); i++ {
@@ -147,7 +151,9 @@ func (b *pallocBits) summarize() pallocSum {
 		if start == notSetYet {
 			start = cur
 		}
-		most = max(most, cur)
+		if cur > max {
+			max = cur
+		}
 		// Final region that might span to next uint64
 		cur = l
 	}
@@ -156,11 +162,12 @@ func (b *pallocBits) summarize() pallocSum {
 		const n = uint(64 * len(b))
 		return packPallocSum(n, n, n)
 	}
-	most = max(most, cur)
-
-	if most >= 64-2 {
+	if cur > max {
+		max = cur
+	}
+	if max >= 64-2 {
 		// There is no way an internal run of zeros could beat max.
-		return packPallocSum(start, most, cur)
+		return packPallocSum(start, max, cur)
 	}
 	// Now look inside each uint64 for runs of zeros.
 	// All uint64s must be nonzero, or we would have aborted above.
@@ -181,7 +188,7 @@ outer:
 
 		// Strategy: shrink all runs of zeros by max. If any runs of zero
 		// remain, then we've identified a larger maximum zero run.
-		p := most    // number of zeros we still need to shrink by.
+		p := max     // number of zeros we still need to shrink by.
 		k := uint(1) // current minimum length of runs of ones in x.
 		for {
 			// Shrink all runs of zeros by p places (except the top zeros).
@@ -210,14 +217,14 @@ outer:
 			x >>= j & 63                       // remove trailing ones
 			j = uint(sys.TrailingZeros64(x))   // count contiguous trailing zeros
 			x >>= j & 63                       // remove zeros
-			most += j                          // we have a new maximum!
+			max += j                           // we have a new maximum!
 			if x&(x+1) == 0 {                  // no more zeros (except at the top).
 				continue outer
 			}
 			p = j // remove j more zeros from each zero run.
 		}
 	}
-	return packPallocSum(start, most, cur)
+	return packPallocSum(start, max, cur)
 }
 
 // find searches for npages contiguous free pages in pallocBits and returns
@@ -324,6 +331,7 @@ func (b *pallocBits) findLargeN(npages uintptr, searchIdx uint) (uint, uint) {
 		}
 		s := uint(sys.TrailingZeros64(x))
 		if s+size >= uint(npages) {
+			size += s
 			return start, newSearchIdx
 		}
 		if s < 64 {

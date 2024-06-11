@@ -13,7 +13,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	_ "embed"
 	"flag"
 	"internal/testenv"
 	"internal/txtar"
@@ -30,8 +29,6 @@ import (
 	"cmd/go/internal/script"
 	"cmd/go/internal/script/scripttest"
 	"cmd/go/internal/vcweb/vcstest"
-
-	"golang.org/x/telemetry/counter/countertest"
 )
 
 var testSum = flag.String("testsum", "", `may be tidy, listm, or listall. If set, TestScript generates a go.sum file at the beginning of each test and updates test files if they pass.`)
@@ -127,7 +124,7 @@ func TestScript(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			telemetryDir := initScriptDirs(t, s)
+			initScriptDirs(t, s)
 			if err := s.ExtractFiles(a); err != nil {
 				t.Fatal(err)
 			}
@@ -157,7 +154,6 @@ func TestScript(t *testing.T) {
 			// will work better seeing the full path relative to cmd/go
 			// (where the "go test" command is usually run).
 			scripttest.Run(t, engine, s, file, bytes.NewReader(a.Comment))
-			checkCounters(t, telemetryDir)
 		})
 	}
 }
@@ -179,9 +175,9 @@ func tbFromContext(ctx context.Context) (testing.TB, bool) {
 	return t.(testing.TB), true
 }
 
-// initScriptDirs creates the initial directory structure in s for unpacking a
+// initScriptState creates the initial directory structure in s for unpacking a
 // cmd/go script.
-func initScriptDirs(t testing.TB, s *script.State) (telemetryDir string) {
+func initScriptDirs(t testing.TB, s *script.State) {
 	must := func(err error) {
 		if err != nil {
 			t.Helper()
@@ -192,10 +188,6 @@ func initScriptDirs(t testing.TB, s *script.State) (telemetryDir string) {
 	work := s.Getwd()
 	must(s.Setenv("WORK", work))
 
-	telemetryDir = filepath.Join(work, "telemetry")
-	must(os.MkdirAll(telemetryDir, 0777))
-	must(s.Setenv("TEST_TELEMETRY_DIR", filepath.Join(work, "telemetry")))
-
 	must(os.MkdirAll(filepath.Join(work, "tmp"), 0777))
 	must(s.Setenv(tempEnvName(), filepath.Join(work, "tmp")))
 
@@ -204,7 +196,6 @@ func initScriptDirs(t testing.TB, s *script.State) (telemetryDir string) {
 	gopathSrc := filepath.Join(gopath, "src")
 	must(os.MkdirAll(gopathSrc, 0777))
 	must(s.Chdir(gopathSrc))
-	return telemetryDir
 }
 
 func scriptEnv(srv *vcstest.Server, srvCertFile string) ([]string, error) {
@@ -232,6 +223,7 @@ func scriptEnv(srv *vcstest.Server, srvCertFile string) ([]string, error) {
 		"GOPROXY=" + proxyURL,
 		"GOPRIVATE=",
 		"GOROOT=" + testGOROOT,
+		"GOROOT_FINAL=" + testGOROOT_FINAL, // causes spurious rebuilds and breaks the "stale" built-in if not propagated
 		"GOTRACEBACK=system",
 		"TESTGONETWORK=panic", // allow only local connections by default; the [net] condition resets this
 		"TESTGO_GOROOT=" + testGOROOT,
@@ -366,55 +358,3 @@ func updateSum(t testing.TB, e *script.Engine, s *script.State, archive *txtar.A
 	}
 	return rewrite
 }
-
-func readCounters(t *testing.T, telemetryDir string) map[string]uint64 {
-	localDir := filepath.Join(telemetryDir, "local")
-	dirents, err := os.ReadDir(localDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // The Go command didn't ever run so the local dir wasn't created
-		}
-		t.Fatalf("reading telemetry local dir: %v", err)
-	}
-	totals := map[string]uint64{}
-	for _, dirent := range dirents {
-		if dirent.IsDir() || !strings.HasSuffix(dirent.Name(), ".count") {
-			// not a counter file
-			continue
-		}
-		counters, _, err := countertest.ReadFile(filepath.Join(localDir, dirent.Name()))
-		if err != nil {
-			t.Fatalf("reading counter file: %v", err)
-		}
-		for k, v := range counters {
-			totals[k] += v
-		}
-	}
-
-	return totals
-}
-
-func checkCounters(t *testing.T, telemetryDir string) {
-	counters := readCounters(t, telemetryDir)
-	if _, ok := scriptGoInvoked.Load(testing.TB(t)); ok {
-		if !disabledOnPlatform && len(counters) == 0 {
-			t.Fatal("go was invoked but no counters were incremented")
-		}
-	}
-}
-
-// Copied from https://go.googlesource.com/telemetry/+/5f08a0cbff3f/internal/telemetry/mode.go#122
-// TODO(go.dev/issues/66205): replace this with the public API once it becomes available.
-//
-// disabledOnPlatform indicates whether telemetry is disabled
-// due to bugs in the current platform.
-const disabledOnPlatform = false ||
-	// The following platforms could potentially be supported in the future:
-	runtime.GOOS == "openbsd" || // #60614
-	runtime.GOOS == "solaris" || // #60968 #60970
-	runtime.GOOS == "android" || // #60967
-	runtime.GOOS == "illumos" || // #65544
-	// These platforms fundamentally can't be supported:
-	runtime.GOOS == "js" || // #60971
-	runtime.GOOS == "wasip1" || // #60971
-	runtime.GOOS == "plan9" // https://github.com/golang/go/issues/57540#issuecomment-1470766639

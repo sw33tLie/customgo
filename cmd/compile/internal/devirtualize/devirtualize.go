@@ -18,28 +18,40 @@ import (
 	"cmd/compile/internal/types"
 )
 
-// StaticCall devirtualizes the given call if possible when the concrete callee
+// Static devirtualizes calls within fn where possible when the concrete callee
 // is available statically.
-func StaticCall(call *ir.CallExpr) {
-	// For promoted methods (including value-receiver methods promoted
-	// to pointer-receivers), the interface method wrapper may contain
-	// expressions that can panic (e.g., ODEREF, ODOTPTR,
-	// ODOTINTER). Devirtualization involves inlining these expressions
-	// (and possible panics) to the call site. This normally isn't a
-	// problem, but for go/defer statements it can move the panic from
-	// when/where the call executes to the go/defer statement itself,
-	// which is a visible change in semantics (e.g., #52072). To prevent
-	// this, we skip devirtualizing calls within go/defer statements
-	// altogether.
-	if call.GoDefer {
-		return
-	}
+func Static(fn *ir.Func) {
+	ir.CurFunc = fn
 
+	// For promoted methods (including value-receiver methods promoted to pointer-receivers),
+	// the interface method wrapper may contain expressions that can panic (e.g., ODEREF, ODOTPTR, ODOTINTER).
+	// Devirtualization involves inlining these expressions (and possible panics) to the call site.
+	// This normally isn't a problem, but for go/defer statements it can move the panic from when/where
+	// the call executes to the go/defer statement itself, which is a visible change in semantics (e.g., #52072).
+	// To prevent this, we skip devirtualizing calls within go/defer statements altogether.
+	goDeferCall := make(map[*ir.CallExpr]bool)
+	ir.VisitList(fn.Body, func(n ir.Node) {
+		switch n := n.(type) {
+		case *ir.GoDeferStmt:
+			if call, ok := n.Call.(*ir.CallExpr); ok {
+				goDeferCall[call] = true
+			}
+			return
+		case *ir.CallExpr:
+			if !goDeferCall[n] {
+				staticCall(n)
+			}
+		}
+	})
+}
+
+// staticCall devirtualizes the given call if possible when the concrete callee
+// is available statically.
+func staticCall(call *ir.CallExpr) {
 	if call.Op() != ir.OCALLINTER {
 		return
 	}
-
-	sel := call.Fun.(*ir.SelectorExpr)
+	sel := call.X.(*ir.SelectorExpr)
 	r := ir.StaticValue(sel.X)
 	if r.Op() != ir.OCONVIFACE {
 		return
@@ -58,7 +70,7 @@ func StaticCall(call *ir.CallExpr) {
 		return
 	}
 
-	// If typ *has* a shape type, then it's a shaped, instantiated
+	// If typ *has* a shape type, then it's an shaped, instantiated
 	// type like T[go.shape.int], and its methods (may) have an extra
 	// dictionary parameter. We could devirtualize this call if we
 	// could derive an appropriate dictionary argument.
@@ -101,23 +113,29 @@ func StaticCall(call *ir.CallExpr) {
 
 	dt := ir.NewTypeAssertExpr(sel.Pos(), sel.X, nil)
 	dt.SetType(typ)
-	x := typecheck.XDotMethod(sel.Pos(), dt, sel.Sel, true)
+	x := typecheck.Callee(ir.NewSelectorExpr(sel.Pos(), ir.OXDOT, dt, sel.Sel))
 	switch x.Op() {
 	case ir.ODOTMETH:
+		x := x.(*ir.SelectorExpr)
 		if base.Flag.LowerM != 0 {
 			base.WarnfAt(call.Pos(), "devirtualizing %v to %v", sel, typ)
 		}
 		call.SetOp(ir.OCALLMETH)
-		call.Fun = x
+		call.X = x
 	case ir.ODOTINTER:
 		// Promoted method from embedded interface-typed field (#42279).
+		x := x.(*ir.SelectorExpr)
 		if base.Flag.LowerM != 0 {
 			base.WarnfAt(call.Pos(), "partially devirtualizing %v to %v", sel, typ)
 		}
 		call.SetOp(ir.OCALLINTER)
-		call.Fun = x
+		call.X = x
 	default:
-		base.FatalfAt(call.Pos(), "failed to devirtualize %v (%v)", x, x.Op())
+		// TODO(mdempsky): Turn back into Fatalf after more testing.
+		if base.Flag.LowerM != 0 {
+			base.WarnfAt(call.Pos(), "failed to devirtualize %v (%v)", x, x.Op())
+		}
+		return
 	}
 
 	// Duplicated logic from typecheck for function call return
@@ -130,9 +148,9 @@ func StaticCall(call *ir.CallExpr) {
 	switch ft := x.Type(); ft.NumResults() {
 	case 0:
 	case 1:
-		call.SetType(ft.Result(0).Type)
+		call.SetType(ft.Results().Field(0).Type)
 	default:
-		call.SetType(ft.ResultsTuple())
+		call.SetType(ft.Results())
 	}
 
 	// Desugar OCALLMETH, if we created one (#57309).

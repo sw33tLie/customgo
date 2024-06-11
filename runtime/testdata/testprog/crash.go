@@ -77,7 +77,7 @@ func DoublePanic() {
 type exampleError struct{}
 
 func (e exampleError) Error() string {
-	panic("important multi-line\nerror message")
+	panic("important error message")
 }
 
 func ErrorPanic() {
@@ -97,7 +97,7 @@ func DoubleErrorPanic() {
 type exampleStringer struct{}
 
 func (s exampleStringer) String() string {
-	panic("important multi-line\nstringer message")
+	panic("important stringer message")
 }
 
 func StringerPanic() {
@@ -115,7 +115,7 @@ func DoubleStringerPanic() {
 }
 
 func StringPanic() {
-	panic("important multi-line\nstring message")
+	panic("important string message")
 }
 
 func NilPanic() {

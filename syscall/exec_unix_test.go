@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 type command struct {
@@ -175,12 +176,15 @@ func TestForeground(t *testing.T) {
 	}
 	defer tty.Close()
 
-	ttyFD := int(tty.Fd())
+	// This should really be pid_t, however _C_int (aka int32) is generally
+	// equivalent.
+	fpgrp := int32(0)
 
-	fpgrp, err := syscall.Tcgetpgrp(ttyFD)
-	if err != nil {
-		t.Fatalf("Tcgetpgrp failed: %v", err)
+	errno := syscall.IoctlPtr(tty.Fd(), syscall.TIOCGPGRP, unsafe.Pointer(&fpgrp))
+	if errno != 0 {
+		t.Fatalf("TIOCGPGRP failed with error code: %s", errno)
 	}
+
 	if fpgrp == 0 {
 		t.Fatalf("Foreground process group is zero")
 	}
@@ -190,7 +194,7 @@ func TestForeground(t *testing.T) {
 	cmd := create(t)
 
 	cmd.proc.SysProcAttr = &syscall.SysProcAttr{
-		Ctty:       ttyFD,
+		Ctty:       int(tty.Fd()),
 		Foreground: true,
 	}
 	cmd.Start()
@@ -213,7 +217,7 @@ func TestForeground(t *testing.T) {
 
 	// This call fails on darwin/arm64. The failure doesn't matter, though.
 	// This is just best effort.
-	syscall.Tcsetpgrp(ttyFD, fpgrp)
+	syscall.IoctlPtr(tty.Fd(), syscall.TIOCSPGRP, unsafe.Pointer(&fpgrp))
 }
 
 func TestForegroundSignal(t *testing.T) {
@@ -223,19 +227,22 @@ func TestForegroundSignal(t *testing.T) {
 	}
 	defer tty.Close()
 
-	ttyFD := int(tty.Fd())
+	// This should really be pid_t, however _C_int (aka int32) is generally
+	// equivalent.
+	fpgrp := int32(0)
 
-	fpgrp, err := syscall.Tcgetpgrp(ttyFD)
-	if err != nil {
-		t.Fatalf("Tcgetpgrp failed: %v", err)
+	errno := syscall.IoctlPtr(tty.Fd(), syscall.TIOCGPGRP, unsafe.Pointer(&fpgrp))
+	if errno != 0 {
+		t.Fatalf("TIOCGPGRP failed with error code: %s", errno)
 	}
+
 	if fpgrp == 0 {
 		t.Fatalf("Foreground process group is zero")
 	}
 
 	defer func() {
 		signal.Ignore(syscall.SIGTTIN, syscall.SIGTTOU)
-		syscall.Tcsetpgrp(ttyFD, fpgrp)
+		syscall.IoctlPtr(tty.Fd(), syscall.TIOCSPGRP, unsafe.Pointer(&fpgrp))
 		signal.Reset()
 	}()
 
@@ -249,7 +256,7 @@ func TestForegroundSignal(t *testing.T) {
 
 	go func() {
 		cmd.proc.SysProcAttr = &syscall.SysProcAttr{
-			Ctty:       ttyFD,
+			Ctty:       int(tty.Fd()),
 			Foreground: true,
 		}
 		cmd.Start()
@@ -303,7 +310,7 @@ func TestInvalidExec(t *testing.T) {
 // TestExec is for issue #41702.
 func TestExec(t *testing.T) {
 	testenv.MustHaveExec(t)
-	cmd := exec.Command(os.Args[0], "-test.run=^TestExecHelper$")
+	cmd := exec.Command(os.Args[0], "-test.run=TestExecHelper")
 	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=2")
 	o, err := cmd.CombinedOutput()
 	if err != nil {
@@ -336,7 +343,7 @@ func TestExecHelper(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	argv := []string{os.Args[0], "-test.run=^TestExecHelper$"}
+	argv := []string{os.Args[0], "-test.run=TestExecHelper"}
 	syscall.Exec(os.Args[0], argv, os.Environ())
 
 	t.Error("syscall.Exec returned")
@@ -350,7 +357,7 @@ func TestRlimitRestored(t *testing.T) {
 	}
 
 	orig := syscall.OrigRlimitNofile()
-	if orig == nil {
+	if orig.Cur == 0 {
 		t.Skip("skipping test because rlimit not adjusted at startup")
 	}
 
@@ -359,7 +366,7 @@ func TestRlimitRestored(t *testing.T) {
 		executable = os.Args[0]
 	}
 
-	cmd := testenv.Command(t, executable, "-test.run=^TestRlimitRestored$")
+	cmd := testenv.Command(t, executable, "-test.run=TestRlimitRestored")
 	cmd = testenv.CleanCmdEnv(cmd)
 	cmd.Env = append(cmd.Env, "GO_WANT_HELPER_PROCESS=1")
 

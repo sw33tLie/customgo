@@ -155,6 +155,7 @@ func Load(l *loader.Loader, arch *sys.Arch, localSymVersion int, input *bio.Read
 		}
 	}
 	return textp, nil
+
 }
 
 // Convert symbol xcoff type to sym.SymKind

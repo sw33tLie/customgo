@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// TestSupported tests that dist and the main tools agree on
+// TestSupportedBuildModes tests that dist and the main tools agree on
 // which build modes are supported for a given target. We do things
 // this way because the dist tool needs to be buildable directly by
 // the bootstrap compiler, and as such can't import internal packages.

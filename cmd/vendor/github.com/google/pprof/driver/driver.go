@@ -186,10 +186,9 @@ type ObjFile interface {
 
 // A Frame describes a single line in a source file.
 type Frame struct {
-	Func   string // name of function
-	File   string // source file name
-	Line   int    // line in file
-	Column int    // column in file
+	Func string // name of function
+	File string // source file name
+	Line int    // line in file
 }
 
 // A Sym describes a single symbol in an object file.
@@ -202,7 +201,7 @@ type Sym struct {
 
 // A UI manages user interactions.
 type UI interface {
-	// ReadLine returns a line of text (a command) read from the user.
+	// Read returns a line of text (a command) read from the user.
 	// prompt is printed before reading the command.
 	ReadLine(prompt string) (string, error)
 

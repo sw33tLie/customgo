@@ -69,7 +69,9 @@ func (fd *FD) Writev(v *[][]byte) (int64, error) {
 		TestHookDidWritev(int(wrote))
 		n += int64(wrote)
 		consume(v, int64(wrote))
-		clear(iovecs)
+		for i := range iovecs {
+			iovecs[i] = syscall.Iovec{}
+		}
 		if err != nil {
 			if err == syscall.EINTR {
 				continue

@@ -45,17 +45,16 @@ func doRequest(useSelect bool) (*response, error) {
 }
 
 func TestChanSendSelectBarrier(t *testing.T) {
-	t.Parallel()
 	testChanSendBarrier(true)
 }
 
 func TestChanSendBarrier(t *testing.T) {
-	t.Parallel()
 	testChanSendBarrier(false)
 }
 
 func testChanSendBarrier(useSelect bool) {
 	var wg sync.WaitGroup
+	var globalMu sync.Mutex
 	outer := 100
 	inner := 100000
 	if testing.Short() || runtime.GOARCH == "wasm" {
@@ -73,15 +72,12 @@ func testChanSendBarrier(useSelect bool) {
 				if !ok {
 					panic(1)
 				}
-				garbage = makeByte()
+				garbage = make([]byte, 1<<10)
 			}
-			_ = garbage
+			globalMu.Lock()
+			global = garbage
+			globalMu.Unlock()
 		}()
 	}
 	wg.Wait()
-}
-
-//go:noinline
-func makeByte() []byte {
-	return make([]byte, 1<<10)
 }

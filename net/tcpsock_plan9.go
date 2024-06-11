@@ -14,10 +14,6 @@ func (c *TCPConn) readFrom(r io.Reader) (int64, error) {
 	return genericReadFrom(c, r)
 }
 
-func (c *TCPConn) writeTo(w io.Writer) (int64, error) {
-	return genericWriteTo(c, w)
-}
-
 func (sd *sysDialer) dialTCP(ctx context.Context, laddr, raddr *TCPAddr) (*TCPConn, error) {
 	if h := sd.testHookDialTCP; h != nil {
 		return h(ctx, sd.network, laddr, raddr)
@@ -46,7 +42,7 @@ func (sd *sysDialer) doDialTCP(ctx context.Context, laddr, raddr *TCPAddr) (*TCP
 	if err != nil {
 		return nil, err
 	}
-	return newTCPConn(fd, sd.Dialer.KeepAlive, sd.Dialer.KeepAliveConfig, testPreHookSetKeepAlive, testHookSetKeepAlive), nil
+	return newTCPConn(fd, sd.Dialer.KeepAlive, testHookSetKeepAlive), nil
 }
 
 func (ln *TCPListener) ok() bool { return ln != nil && ln.fd != nil && ln.fd.ctl != nil }
@@ -56,7 +52,7 @@ func (ln *TCPListener) accept() (*TCPConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newTCPConn(fd, ln.lc.KeepAlive, ln.lc.KeepAliveConfig, testPreHookSetKeepAlive, testHookSetKeepAlive), nil
+	return newTCPConn(fd, ln.lc.KeepAlive, nil), nil
 }
 
 func (ln *TCPListener) close() error {

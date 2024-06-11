@@ -28,7 +28,6 @@ import (
 	"strings"
 
 	"cmd/internal/objfile"
-	"cmd/internal/telemetry"
 )
 
 func printUsage(w *os.File) {
@@ -46,7 +45,6 @@ func usage() {
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("addr2line: ")
-	telemetry.Start()
 
 	// pprof expects this behavior when checking for addr2line
 	if len(os.Args) > 1 && os.Args[1] == "--help" {
@@ -56,8 +54,6 @@ func main() {
 
 	flag.Usage = usage
 	flag.Parse()
-	telemetry.Inc("addr2line/invocations")
-	telemetry.CountFlags("addr2line/flag:", *flag.CommandLine)
 	if flag.NArg() != 1 {
 		usage()
 	}
